@@ -1,0 +1,59 @@
+{
+  "tesserae_compat": "1.x",
+  "name": "Electricity Price",
+  "version": "0.1.0",
+  "kind": "widget",
+  "description": "Today's hourly electricity spot price as a bar chart, with the current hour highlighted. Data from the Ostrom API (gross price, incl. tax).",
+  "icon": "ph-lightning",
+  "supports": {
+    "sizes": [
+      "xs",
+      "sm",
+      "md",
+      "lg"
+    ]
+  },
+  "settings": [
+    {
+      "name": "client_id",
+      "type": "string",
+      "label": "Ostrom Client ID",
+      "secret": true,
+      "default": "",
+      "help": "From the Ostrom Developer Portal. Stored encrypted on disk."
+    },
+    {
+      "name": "client_secret",
+      "type": "string",
+      "label": "Ostrom Client Secret",
+      "secret": true,
+      "default": "",
+      "help": "From the Ostrom Developer Portal. Stored encrypted on disk."
+    },
+    {
+      "name": "zip",
+      "type": "string",
+      "label": "ZIP code",
+      "default": "10115",
+      "help": "German postal code, used for location-specific grid fees in the gross price."
+    }
+  ],
+  "cell_options": [
+    {
+      "name": "title",
+      "type": "string",
+      "label": "Title",
+      "default": "",
+      "help": "Optional heading override; blank shows \"Electricity\"."
+    }
+  ],
+  "render": {
+    "dither": "none",
+    "needs_network": true
+  },
+  "requires": [
+    "network:auth.production.ostrom-api.io",
+    "network:production.ostrom-api.io",
+    "settings:plugin"
+  ]
+}
