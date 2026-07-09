@@ -9,7 +9,11 @@ the root conftest), so the on-disk token/price caches never bleed between runs.
 
 from __future__ import annotations
 
+import io
 import json
+import threading
+import time
+import urllib.error
 from datetime import date, timedelta
 from unittest.mock import patch
 
@@ -143,3 +147,93 @@ def test_stale_old_schema_cache_is_ignored(app: Flask, tmp_path) -> None:
     assert "error" not in result, result
     assert isinstance(result.get("today"), list) and len(result["today"]) >= 2
     assert result.get("hasBand") is True
+
+
+def test_cooldown_prevents_hammering_after_rate_limit(app: Flask, tmp_path) -> None:
+    """A 429 from Ostrom must not be retried on every subsequent fetch() call
+    within the cooldown window — that's exactly what turns a single rate-limit
+    response into a sustained lockout (each retry is itself another request
+    against the same per-minute limit)."""
+    _skip_if_not_loaded(app)
+    from importlib import import_module
+
+    srv = import_module("plugins.ostrom_prices.server")
+
+    data_dir = tmp_path / "pdir"
+    data_dir.mkdir()
+    settings = {"client_id": "cid", "client_secret": "csec", "zip": "10115"}
+    ctx = {"data_dir": str(data_dir), "panel_w": 800, "panel_h": 480, "preview": False}
+
+    calls = {"n": 0}
+
+    def fake_urlopen(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib.error.HTTPError(
+                srv.AUTH_URL,
+                429,
+                "Too Many Requests",
+                {"Retry-After": "120"},
+                io.BytesIO(b'{"type":"too_many_requests","detail":"API request limit reached"}'),
+            )
+        pytest.fail("urlopen called again while a cooldown from the prior 429 was active")
+
+    with app.app_context():
+        app.config["SETTINGS_STORE"].update_section("app", {"timezone": "Europe/Berlin"})
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            first = srv.fetch({}, settings, ctx=ctx)
+            second = srv.fetch({}, settings, ctx=ctx)
+
+    assert "429" in first["error"]
+    assert first["error"] == second["error"]
+    assert calls["n"] == 1
+
+
+def test_concurrent_cold_cache_fetches_only_once(app: Flask, tmp_path) -> None:
+    """The composer fetches every cell's data on its own thread, all launched
+    together, so a cold price cache can be hit by several threads at the same
+    instant. Without the in-process lock each thread independently repeats
+    the OAuth exchange + prices request — enough on its own to trip a
+    per-minute rate limit even with correct on-disk caching."""
+    _skip_if_not_loaded(app)
+    from importlib import import_module
+
+    srv = import_module("plugins.ostrom_prices.server")
+
+    data_dir = tmp_path / "pdir"
+    data_dir.mkdir()
+    settings = {"client_id": "cid", "client_secret": "csec", "zip": "10115"}
+    ctx = {"data_dir": str(data_dir), "panel_w": 800, "panel_h": 480, "preview": False}
+
+    calls = {"n": 0}
+    counter_lock = threading.Lock()
+
+    def fake_urlopen(req, timeout=None):
+        with counter_lock:
+            calls["n"] += 1
+        if "oauth2/token" in req.full_url:
+            # Widen the race window so a second thread's initial (unlocked)
+            # cache check has time to also observe a miss before the winner
+            # finishes and writes the cache.
+            time.sleep(0.05)
+            return _FakeResp(_token_body())
+        return _FakeResp(_prices_body())
+
+    with app.app_context():
+        app.config["SETTINGS_STORE"].update_section("app", {"timezone": "Europe/Berlin"})
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            results: list[dict | None] = [None, None]
+
+            def worker(i: int) -> None:
+                results[i] = srv.fetch({}, settings, ctx=ctx)
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+    assert "error" not in results[0], results[0]
+    assert "error" not in results[1], results[1]
+    # One token exchange + one prices GET total, not one pair per thread.
+    assert calls["n"] == 2

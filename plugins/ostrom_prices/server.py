@@ -23,6 +23,7 @@ import base64
 import contextlib
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -68,6 +69,20 @@ PRICES_URL = "https://production.ostrom-api.io/spot-prices"
 # Renew a little before the real expiry so a token never dies mid-request.
 TOKEN_EXPIRY_SKEW_S = 60
 
+# Default cooldown after ANY failed network attempt (token exchange or prices
+# GET), so a failure is remembered and short-circuits the next call instead of
+# retrying immediately. Without this, every fetch() that misses the price
+# cache retries the full network chain unconditionally — if the host calls
+# fetch() more than once a minute (e.g. a live settings-editor preview), that
+# alone is enough to keep re-tripping Ostrom's per-minute rate limit forever,
+# since a failure was never remembered. Applies to bad-credential errors too:
+# those don't get fixed by retrying, so hammering the token endpoint every
+# render is pure waste and API-quota risk.
+FAILURE_COOLDOWN_S = 60
+# Cap how long we honour an upstream Retry-After so a misbehaving header can't
+# wedge the widget for hours.
+MAX_RETRY_AFTER_S = 300
+
 
 def _iso_utc(dt: datetime) -> str:
     """Ostrom wants ``2023-11-01T00:00:00.000Z``."""
@@ -101,6 +116,58 @@ def _read_cache(path: Path, ttl_s: float) -> Any | None:
 def _write_cache(path: Path, payload: Any) -> None:
     with contextlib.suppress(OSError):
         path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _retry_after_s(err: urllib.error.HTTPError) -> float | None:
+    """Parse a numeric ``Retry-After`` header (seconds form; Ostrom's 429
+    uses this, not the HTTP-date form), clamped to a sane ceiling."""
+    raw = err.headers.get("Retry-After") if err.headers else None
+    if not raw:
+        return None
+    try:
+        return min(MAX_RETRY_AFTER_S, max(1.0, float(raw)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _active_cooldown(cooldown_path: Path) -> str | None:
+    """Return the remembered error message if a prior failure's cooldown
+    hasn't elapsed yet, else None (clear to attempt the network again)."""
+    cached = _read_cache(cooldown_path, ttl_s=float("inf"))
+    if not isinstance(cached, dict):
+        return None
+    until = cached.get("until")
+    message = cached.get("error")
+    if isinstance(until, int | float) and isinstance(message, str) and time.time() < until:
+        return message
+    return None
+
+
+def _start_cooldown(cooldown_path: Path, message: str, *, seconds: float) -> None:
+    _write_cache(cooldown_path, {"until": time.time() + seconds, "error": message})
+
+
+def _cache_ok(cached: Any) -> bool:
+    """True for a price-cache entry worth serving: current schema (a
+    partial/old entry rendered an empty "No price data" cell) with at
+    least two hourly points."""
+    return (
+        isinstance(cached, dict)
+        and isinstance(cached.get("today"), list)
+        and len(cached["today"]) >= 2
+    )
+
+
+# The composer fetches every cell's data in its own thread, all launched
+# together, so on a cold cache (first render, or right after the price TTL
+# lapses) several threads can all miss the cache in the same instant. This
+# lock serializes the network path so only one of them actually calls
+# Ostrom; the rest block here and then read the cache the winner just
+# populated. Without it, a page with N ostrom_prices cells fires up to 2N
+# real requests (token + prices, per cell) in the same moment on a cold
+# render — enough on its own to trip a per-minute rate limit even though
+# the on-disk cache is otherwise correctly shared and TTL'd.
+_fetch_lock = threading.Lock()
 
 
 def _access_token(client_id: str, client_secret: str, token_path: Path) -> str:
@@ -214,66 +281,102 @@ def fetch(
     prices_path = data_dir / f"prices_{CACHE_SCHEMA}_{zip_code or 'none'}_{today.isoformat()}.json"
 
     cached = _read_cache(prices_path, PRICES_TTL_S)
-    # Only trust a cache entry that carries the current schema; a partial/old
-    # entry falls through to a fresh fetch instead of rendering an empty cell.
-    if isinstance(cached, dict) and isinstance(cached.get("today"), list) and len(cached["today"]) >= 2:
+    if _cache_ok(cached):
         # Recompute the "now" pointer on cache hit so the highlight tracks the
         # current hour even when the price data itself is unchanged.
         return _reslice_now(cached, zone, now)
 
-    token_path = data_dir / "token.json"
-    try:
-        token = _access_token(client_id, client_secret, token_path)
-    except urllib.error.HTTPError as err:
-        if err.code in (400, 401, 403):
-            return {"error": "Check your Ostrom Client ID and Secret."}
-        detail = _http_detail(err)
-        logger.warning("ostrom_prices: token exchange failed: %s", detail)
-        return {"error": f"Ostrom sign-in failed ({detail})."}
-    except Exception as err:
-        logger.warning("ostrom_prices: token exchange error: %r", err)
-        return {"error": f"Couldn't reach Ostrom: {type(err).__name__}: {err}"}
+    # Cold cache: serialize concurrent callers (see _fetch_lock) so only one
+    # of them hits the network; everyone else blocks here and then re-reads
+    # whatever the winner (or a cooldown from a just-failed winner) left
+    # behind, instead of independently repeating the same request.
+    with _fetch_lock:
+        cached = _read_cache(prices_path, PRICES_TTL_S)
+        if _cache_ok(cached):
+            return _reslice_now(cached, zone, now)
 
-    start = local_midnight_utc(today - timedelta(days=HISTORY_DAYS), zone)
-    end = local_midnight_utc(today + timedelta(days=1), zone)
-    query = {
-        "startDate": _iso_utc(start),
-        "endDate": _iso_utc(end),
-        "resolution": "HOUR",
-    }
-    if zip_code:
-        query["zip"] = zip_code
-    url = f"{PRICES_URL}?{urllib.parse.urlencode(query)}"
+        # A prior failure (bad credentials, rate limit, upstream outage) is
+        # remembered for a cooldown window so a host that calls fetch() more
+        # often than the price cache's 10-min TTL (e.g. a live settings-editor
+        # preview) can't retry a doomed request every time and keep
+        # re-tripping Ostrom's per-minute rate limit.
+        cooldown_path = data_dir / "cooldown.json"
+        cooldown_error = _active_cooldown(cooldown_path)
+        if cooldown_error is not None:
+            return {"error": cooldown_error}
 
-    try:
-        payload = fetch_json(
-            url,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
-            timeout=HTTP_TIMEOUT_S,
-            retries=0,
-        )
-    except urllib.error.HTTPError as err:
-        if err.code in (401, 403):
-            # Token may have gone stale under us; drop it so the next render
-            # re-exchanges instead of serving the same bad token from cache.
-            with contextlib.suppress(OSError):
-                token_path.unlink()
-            return {"error": "Check your Ostrom Client ID and Secret."}
-        detail = _http_detail(err)
-        logger.warning("ostrom_prices: spot-prices failed: %s", detail)
-        return {"error": f"Ostrom prices request failed ({detail})."}
-    except Exception as err:
-        logger.warning("ostrom_prices: spot-prices error: %r", err)
-        return {"error": f"Couldn't load Ostrom prices: {type(err).__name__}: {err}"}
+        token_path = data_dir / "token.json"
+        try:
+            token = _access_token(client_id, client_secret, token_path)
+        except urllib.error.HTTPError as err:
+            if err.code in (400, 401, 403):
+                message = "Check your Ostrom Client ID and Secret."
+                _start_cooldown(cooldown_path, message, seconds=FAILURE_COOLDOWN_S)
+                return {"error": message}
+            detail = _http_detail(err)
+            logger.warning("ostrom_prices: token exchange failed: %s", detail)
+            message = f"Ostrom sign-in failed ({detail})."
+            _start_cooldown(
+                cooldown_path, message, seconds=_retry_after_s(err) or FAILURE_COOLDOWN_S
+            )
+            return {"error": message}
+        except Exception as err:
+            logger.warning("ostrom_prices: token exchange error: %r", err)
+            message = f"Couldn't reach Ostrom: {type(err).__name__}: {err}"
+            _start_cooldown(cooldown_path, message, seconds=FAILURE_COOLDOWN_S)
+            return {"error": message}
 
-    rows = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(rows, list):
-        return {"error": "Ostrom returned an unexpected response."}
+        start = local_midnight_utc(today - timedelta(days=HISTORY_DAYS), zone)
+        end = local_midnight_utc(today + timedelta(days=1), zone)
+        query = {
+            "startDate": _iso_utc(start),
+            "endDate": _iso_utc(end),
+            "resolution": "HOUR",
+        }
+        if zip_code:
+            query["zip"] = zip_code
+        url = f"{PRICES_URL}?{urllib.parse.urlencode(query)}"
 
-    result = _shape(rows, zone, today, now)
-    if "error" not in result:
-        _write_cache(prices_path, result)
-    return result
+        try:
+            payload = fetch_json(
+                url,
+                headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
+                timeout=HTTP_TIMEOUT_S,
+                retries=0,
+            )
+        except urllib.error.HTTPError as err:
+            if err.code in (401, 403):
+                # Token may have gone stale under us; drop it so the next
+                # render re-exchanges instead of serving the same bad token
+                # from cache.
+                with contextlib.suppress(OSError):
+                    token_path.unlink()
+                message = "Check your Ostrom Client ID and Secret."
+                _start_cooldown(cooldown_path, message, seconds=FAILURE_COOLDOWN_S)
+                return {"error": message}
+            detail = _http_detail(err)
+            logger.warning("ostrom_prices: spot-prices failed: %s", detail)
+            message = f"Ostrom prices request failed ({detail})."
+            _start_cooldown(
+                cooldown_path, message, seconds=_retry_after_s(err) or FAILURE_COOLDOWN_S
+            )
+            return {"error": message}
+        except Exception as err:
+            logger.warning("ostrom_prices: spot-prices error: %r", err)
+            message = f"Couldn't load Ostrom prices: {type(err).__name__}: {err}"
+            _start_cooldown(cooldown_path, message, seconds=FAILURE_COOLDOWN_S)
+            return {"error": message}
+
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            message = "Ostrom returned an unexpected response."
+            _start_cooldown(cooldown_path, message, seconds=FAILURE_COOLDOWN_S)
+            return {"error": message}
+
+        result = _shape(rows, zone, today, now)
+        if "error" not in result:
+            _write_cache(prices_path, result)
+        return result
 
 
 def _reslice_now(cached: dict[str, Any], zone: Any, now: datetime) -> dict[str, Any]:
