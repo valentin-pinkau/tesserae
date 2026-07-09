@@ -1,0 +1,38 @@
+{
+  "tesserae_compat": "1.x",
+  "name": "BVG Departures",
+  "version": "0.1.0",
+  "kind": "widget",
+  "description": "Next departures from a Berlin BVG/VBB stop (defaults to S Julius-Leber-Brücke). Uses the free v6.bvg.transport.rest API, no key required.",
+  "icon": "ph-train",
+  "supports": {
+    "sizes": ["xs", "sm", "md", "lg"]
+  },
+  "cell_options": [
+    {
+      "name": "stop_id",
+      "type": "string",
+      "label": "Stop ID",
+      "default": "900057104",
+      "help": "BVG/VBB stop ID. Look one up at v6.bvg.transport.rest/locations?query=<name>. Default is S Julius-Leber-Brücke."
+    },
+    {
+      "name": "stop_name",
+      "type": "string",
+      "label": "Stop name",
+      "default": "S Julius-Leber-Brücke",
+      "help": "Display label shown in the title; purely cosmetic."
+    },
+    {
+      "name": "max_rows",
+      "type": "number",
+      "label": "Max departures",
+      "default": 6
+    }
+  ],
+  "render": {
+    "dither": "none",
+    "needs_network": true
+  },
+  "requires": ["network:v6.bvg.transport.rest"]
+}
