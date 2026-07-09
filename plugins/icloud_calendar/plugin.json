@@ -1,0 +1,57 @@
+{
+  "tesserae_compat": "1.x",
+  "name": "iCloud Calendar",
+  "version": "0.1.0",
+  "kind": "widget",
+  "description": "Your private iCloud calendar as a time-grid: one day at xs/sm, three rolling days at md, a rolling 7-day week at lg. Authenticates over CalDAV with your Apple ID + an app-specific password (set once in Settings → Plugins).",
+  "icon": "ph-calendar-dots",
+  "supports": {
+    "sizes": [
+      "xs",
+      "sm",
+      "md",
+      "lg"
+    ]
+  },
+  "settings": [
+    {
+      "name": "apple_id",
+      "type": "string",
+      "label": "Apple ID (iCloud email)",
+      "default": "",
+      "help": "The Apple ID whose calendars you want to show, e.g. you@icloud.com."
+    },
+    {
+      "name": "app_password",
+      "type": "string",
+      "label": "App-specific password",
+      "secret": true,
+      "default": "",
+      "help": "Generate at appleid.apple.com → Sign-In & Security → App-Specific Passwords. Two-factor auth must be enabled. This is NOT your normal Apple ID password."
+    }
+  ],
+  "cell_options": [
+    {
+      "name": "calendars",
+      "type": "string",
+      "label": "Calendars",
+      "default": "",
+      "help": "Comma-separated calendar names to show (matched case-insensitively). Blank = every calendar on the account."
+    },
+    {
+      "name": "hide_labels",
+      "type": "boolean",
+      "label": "Colour bars only",
+      "default": false,
+      "help": "Hide event titles and paint each event as a plain colour bar — a glanceable heatmap of how busy each day is."
+    }
+  ],
+  "render": {
+    "dither": "none",
+    "needs_network": true
+  },
+  "requires": [
+    "network:*",
+    "settings:plugin"
+  ]
+}
