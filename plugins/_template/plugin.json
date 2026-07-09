@@ -1,0 +1,55 @@
+{
+  "tesserae_compat": "1.x",
+  "name": "__NAME__",
+  "version": "0.1.0",
+  "kind": "widget",
+  "description": "One clear sentence describing what this widget shows and where the data comes from.",
+  "icon": "ph-squares-four",
+  "supports": {
+    "sizes": [
+      "xs",
+      "sm",
+      "md",
+      "lg"
+    ]
+  },
+  "settings": [
+    {
+      "name": "api_url",
+      "type": "string",
+      "label": "API URL",
+      "default": "",
+      "help": "Optional. Leave blank to render built-in demo data. Delete this whole settings block if the widget needs no plugin-wide config."
+    },
+    {
+      "name": "api_key",
+      "type": "string",
+      "label": "API key",
+      "secret": true,
+      "default": "",
+      "help": "Stored encrypted on disk; handed to server.py fetch() as plaintext. Delete if unused."
+    }
+  ],
+  "cell_options": [
+    {
+      "name": "title",
+      "type": "string",
+      "label": "Title",
+      "default": "",
+      "help": "Optional heading override; blank uses the widget name."
+    },
+    {
+      "name": "max_rows",
+      "type": "number",
+      "label": "Max rows",
+      "default": 6
+    }
+  ],
+  "render": {
+    "dither": "none",
+    "needs_network": true
+  },
+  "requires": [
+    "settings:plugin"
+  ]
+}
