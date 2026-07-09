@@ -1,0 +1,39 @@
+{
+  "tesserae_compat": "1.x",
+  "name": "Weather, Today",
+  "version": "0.1.0",
+  "kind": "widget",
+  "description": "Temperature, rain probability and UV index as three lines across the current calendar day (00:00–24:00). Data from Open-Meteo (no API key).",
+  "icon": "ph-chart-line",
+  "supports": {
+    "sizes": [
+      "xs",
+      "sm",
+      "md",
+      "lg"
+    ]
+  },
+  "cell_options": [
+    {
+      "name": "location",
+      "type": "location_search",
+      "label": "Location",
+      "default": "",
+      "help": "Search a city to set the location. The latitude / longitude that drive the weather data come from the picked result; the Label below auto-fills with the city name."
+    },
+    {
+      "name": "label",
+      "type": "string",
+      "label": "Label",
+      "default": "",
+      "help": "Auto-filled from the location pick; edit to customise (e.g. 'Home' instead of 'Berlin')."
+    }
+  ],
+  "render": {
+    "dither": "none",
+    "needs_network": true
+  },
+  "requires": [
+    "network:api.open-meteo.com"
+  ]
+}
