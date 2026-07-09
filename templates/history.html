@@ -41,6 +41,16 @@
   {% elif status == 'busy' %}<span class="dx-pill is-warn"><span class="dx-pill-dot"></span>busy</span>
   {% elif status == 'quiet' %}<span class="dx-pill is-warn"><span class="dx-pill-dot"></span>quiet</span>
   {% elif status == 'not_found' %}<span class="dx-pill is-danger"><span class="dx-pill-dot"></span>not found</span>
+  {% elif status == 'superseded' %}<span class="dx-pill is-info"><span class="dx-pill-dot"></span>superseded</span>
+  {# Button-service rows (source=button) carry their own status vocabulary
+     distinct from the push pipeline's — these are all non-failure
+     outcomes of a button press, not push results, so they were falling
+     through to the red "failed" pill unconditionally before this was
+     added (every rotate/refresh button press rendered as failed). #}
+  {% elif status == 'webhook_dispatched' %}<span class="dx-pill is-ok"><span class="dx-pill-dot"></span>webhook fired</span>
+  {% elif status == 'noop' %}<span class="dx-pill is-info"><span class="dx-pill-dot"></span>no-op</span>
+  {% elif status == 'unmapped' %}<span class="dx-pill is-warn"><span class="dx-pill-dot"></span>unmapped</span>
+  {% elif status == 'deduped' %}<span class="dx-pill is-info"><span class="dx-pill-dot"></span>deduped</span>
   {% else %}<span class="dx-pill is-danger"><span class="dx-pill-dot"></span>failed</span>{% endif %}
 {% endmacro %}
 
@@ -113,7 +123,7 @@
   {% else %}
   <ul class="dx-discovered-list">
     {% for ev in history %}
-    {% set is_failed = ev.status not in ('sent', 'busy', 'quiet', 'no_change') %}
+    {% set is_failed = ev.status not in ('sent', 'busy', 'quiet', 'no_change', 'superseded', 'webhook_dispatched', 'noop', 'unmapped', 'deduped') %}
     <li class="dx-inset-row dx-history-row{% if is_failed %} dx-history-row--failed{% endif %}">
       {% if ev.digest %}
       <a class="dx-history-thumb" href="{{ url_for('renders', filename=ev.digest ~ '.png') }}" data-lightbox aria-label="Open render for push #{{ ev.id }}">

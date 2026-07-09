@@ -109,6 +109,25 @@ def test_publish_with_no_broker_configured_is_silent(fakes) -> None:
     t.publish("tesserae/esp32/frame/bin", b"payload", qos=1)
 
 
+def test_fresh_install_wiring_no_ops_instead_of_raising(tmp_path) -> None:
+    """Integration-level regression for issue #67: a brand-new install
+    (empty ``broker`` section, embedded broker off) must wire up a
+    transport whose ``publish()`` no-ops, not one that raises. This
+    used to break because ``_rebuild_transport`` defaulted
+    ``BrokerConfig(host=...)`` to ``"localhost"`` when the operator
+    left the field blank, which made the "no broker configured"
+    check in ``MqttTransport.publish()`` unreachable, so pushing a
+    dashboard on a fresh install crashed every MQTT-native renderer
+    (pico_bin, trmnl_png, ...) with "transport not connected"."""
+    from app.main import create_app
+
+    app = create_app(testing=True, data_root=tmp_path)
+    transport = app.config["MQTT_TRANSPORT"]
+    assert not transport.connected
+    # Must not raise:
+    transport.publish("tesserae/pico_bin/frame/bin", b"payload", qos=1)
+
+
 def test_publish_propagates_paho_rc(fakes) -> None:
     """Non-recoverable rc values (anything other than NO_CONN) still raise."""
     holder, factory = fakes

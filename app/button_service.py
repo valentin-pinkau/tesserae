@@ -341,6 +341,7 @@ class ButtonService:
         # updated so the next timer wake catches up.
         pushed_page_id: str | None = None
         push_result: PushResult | None = None
+        push_exception_error: str | None = None
         pusher = self._push_getter()
         if pusher is not None:
             if result.target_page_id is not None:
@@ -355,13 +356,14 @@ class ButtonService:
                         respect_quiet_hours=False,
                         source="button",
                     )
-                except Exception:
+                except Exception as exc:
                     log.exception(
                         "button push failed: device=%s page=%s spec=%s",
                         device_id,
                         pushed_page_id,
                         spec,
                     )
+                    push_exception_error = f"{type(exc).__name__}: {exc}"
 
         # webhook:<url> action: fire a POST asynchronously so /frame
         # doesn't block on external endpoints. ``dispatch`` has already
@@ -414,16 +416,29 @@ class ButtonService:
             push_result=push_result,
         )
         # Status distinguishes the outcomes admins care about: an actual
-        # push, a fire-and-forget webhook (no push), or a rotate/refresh
-        # that resolved to "nothing to do" (rare edge case, but worth
-        # showing so the user sees the press wasn't lost).
+        # push (reflecting the *real* push outcome, not just "we tried"),
+        # a fire-and-forget webhook (no push), or a rotate/refresh that
+        # resolved to "nothing to do" (rare edge case, but worth showing
+        # so the user sees the press wasn't lost).
+        row_error: str | None = None
         if action_name == "webhook":
             status = "webhook_dispatched"
         elif pushed_page_id is not None:
-            status = "dispatched"
+            if push_result is not None:
+                status = push_result.status
+                row_error = push_result.error
+            else:
+                # pusher.push() raised before returning a PushResult, e.g.
+                # a render or transport-level exception. Surface it as a
+                # genuine failure instead of the misleadingly upbeat
+                # "dispatched" this branch used to report unconditionally.
+                status = "failed"
+                row_error = push_exception_error or "push failed (see server log)"
         else:
             status = "noop"
-        self._emit_history_row(result=result_ok, button=button, event_id=event_id, status=status)
+        self._emit_history_row(
+            result=result_ok, button=button, event_id=event_id, status=status, error=row_error
+        )
         return result_ok
 
     # ---- internals ---------------------------------------------------

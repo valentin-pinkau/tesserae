@@ -555,7 +555,14 @@ def _rebuild_transport(
         transport_user = embedded_user
         transport_pass = embedded_pass or None
     config = BrokerConfig(
-        host=host or "localhost",
+        # Deliberately NOT falling back to "localhost" here: an empty
+        # host is the signal transport.publish() uses to no-op instead
+        # of raising for broker-less installs (issue #67). ``connect()``
+        # below is already gated on the raw ``host`` var, so this
+        # fallback never bought us a real connection, it only masked
+        # "no broker configured" and turned every MQTT-kind renderer
+        # (pico_bin, trmnl_png, ...) into a hard failure on push.
+        host=host,
         port=int(broker_raw.get("port") or embedded_port or 1883),
         username=transport_user,
         password=transport_pass,

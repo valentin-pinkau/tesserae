@@ -74,7 +74,7 @@ class StubPushManager:
                 "source": source,
             }
         )
-        return PushResult(status="pushed", page_id=page_id)
+        return PushResult(status="sent", page_id=page_id)
 
 
 @pytest.fixture
@@ -665,7 +665,10 @@ def test_dispatched_press_emits_history_row(
     row = rows[0]
     assert row.source == "button"
     assert row.target == "kitchen"
-    assert row.status == "dispatched"
+    # Status mirrors the real push outcome (PushResult.status), not a
+    # blanket "we attempted a push" label — a genuinely failed push
+    # must show up as failed in the History page, not dispatched.
+    assert row.status == "sent"
     assert row.extra["button"] == "right"
     assert row.extra["button_event_id"] == 1
     assert row.extra["action_spec"] == "rotate_next"
@@ -699,7 +702,7 @@ def test_deduped_press_emits_history_row(
 
     rows = _button_rows(event_log)
     statuses = [r.status for r in rows]
-    assert "dispatched" in statuses
+    assert "sent" in statuses
     assert "deduped" in statuses
 
 
@@ -835,3 +838,36 @@ def test_push_failure_still_persists_state(
     persisted = state_store.get("kitchen")
     assert persisted is not None
     assert persisted.step_index == 1
+
+
+def test_push_failure_emits_failed_history_row(
+    rotation_store: RotationStore,
+    state_store: DeviceRotationStateStore,
+    settings_store: SettingsStore,
+    page_store: PageStore,
+    clock: FakeClock,
+    event_log: EventLog,
+) -> None:
+    """A PushManager that raises must surface as a genuine ``failed``
+    row with an error message, not the misleadingly upbeat status a
+    "we attempted a push" label would give the History page (this is
+    what silently made every real rotate/refresh failure look
+    identical to a success there)."""
+    _seed_rotation(rotation_store)
+    push_manager = StubPushManager(fail=True)
+    svc = _wire(
+        rotation_store=rotation_store,
+        state_store=state_store,
+        settings_store=settings_store,
+        page_store=page_store,
+        push_manager=push_manager,
+        clock=clock,
+        event_log=event_log,
+    )
+
+    svc.handle_button(device_id="kitchen", button="right", event_id=1)
+
+    rows = _button_rows(event_log)
+    assert len(rows) == 1
+    assert rows[0].status == "failed"
+    assert rows[0].error and "stub push failure" in rows[0].error
