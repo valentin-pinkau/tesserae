@@ -452,8 +452,12 @@ increasing uint the firmware maintains per device (persist across
 deep sleep, e.g. in NVS). Retries send the same id, and the server
 treats any incoming id `<= last processed` as a duplicate. A
 firmware without a monotonic counter can omit `button_event_id` and
-fall back to the server's time-window debounce (default 3 seconds,
-overridable via `settings.app.button_debounce_s`).
+fall back to the server's time-window debounce (default 6 seconds,
+overridable via `settings.app.button_debounce_s`). Note the id-based
+path only engages once the server has *stored* a non-null id, so a
+firmware that sends `button_event_id` on `/status` but omits it on
+the immediately preceding `/frame` wake still relies on the
+time-window fallback for that pair.
 
 **Response** (`200 OK`):
 ```json

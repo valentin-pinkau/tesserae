@@ -567,8 +567,11 @@ class ButtonService:
         # the same id; a duplicate is anything <= the last processed.
         if event_id is not None and state.last_button_event_id is not None:
             return event_id <= state.last_button_event_id
-        # Fallback for firmwares that don't send an id: same button
-        # within the configured window (default 3s).
+        # Fallback for firmwares that don't send an id (or only send it
+        # on one of /frame vs /status, so the stored id is still None):
+        # same button within the configured window (default 6s, wide
+        # enough to cover the observed 3-4s gap between those two
+        # endpoints on a single physical press).
         if state.last_button == button and state.last_button_at is not None:
             window = timedelta(seconds=self._debounce_seconds())
             if now - state.last_button_at <= window:

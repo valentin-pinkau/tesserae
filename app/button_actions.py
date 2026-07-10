@@ -258,4 +258,4 @@ DEFAULT_BUTTON_MAP: dict[str, str] = {
     "refresh": "refresh",
 }
 
-DEFAULT_DEBOUNCE_SECONDS: float = 3.0
+DEFAULT_DEBOUNCE_SECONDS: float = 6.0

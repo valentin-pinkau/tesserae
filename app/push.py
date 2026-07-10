@@ -869,7 +869,10 @@ class PushManager:
             composition_digest=digest,
             duration_s=total_s,
             renderers=all_renderers,
-            error=None if status == "sent" else "one or more panels failed to render/publish",
+            # ``no_change`` is a successful skip (content already
+            # matched, nothing to publish), not a failure, so it must
+            # not carry this error string, only ``failed`` should.
+            error="one or more panels failed to render/publish" if status == "failed" else None,
         )
 
     def _push_bytes_locked(
