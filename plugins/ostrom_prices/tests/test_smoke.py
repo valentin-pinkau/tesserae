@@ -14,7 +14,7 @@ import json
 import threading
 import time
 import urllib.error
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -126,7 +126,7 @@ def test_stale_old_schema_cache_is_ignored(app: Flask, tmp_path) -> None:
 
     data_dir = tmp_path / "pdir"
     data_dir.mkdir()
-    # Old-schema entry at BOTH the old and versioned paths, well within TTL.
+    # Old-schema entry at BOTH the old and versioned paths.
     today = date.today().isoformat()
     old = {"labels": ["00", "01"], "prices": [25.0, 26.0], "unit": "ct/kWh"}
     (data_dir / f"prices_10115_{today}.json").write_text(json.dumps(old))
@@ -147,6 +147,63 @@ def test_stale_old_schema_cache_is_ignored(app: Flask, tmp_path) -> None:
     assert "error" not in result, result
     assert isinstance(result.get("today"), list) and len(result["today"]) >= 2
     assert result.get("hasBand") is True
+
+
+def test_price_cache_lasts_the_whole_day(app: Flask, tmp_path) -> None:
+    """Day-ahead prices never change once published, so a cache hit must be
+    served regardless of how long ago it was written (as long as it's still
+    today's file) — only the now/nowIndex pointer gets recomputed, never a
+    fresh network fetch. Simulates a cache file from hours ago (well past the
+    plugin's old 10-minute TTL) and confirms urlopen is never called."""
+    _skip_if_not_loaded(app)
+    from importlib import import_module
+
+    srv = import_module("plugins.ostrom_prices.server")
+
+    data_dir = tmp_path / "pdir"
+    data_dir.mkdir()
+    today = date.today().isoformat()
+    cached = {
+        "labels": [f"{h:02d}" for h in range(24)],
+        "hours": list(range(24)),
+        "today": [20.0 + h for h in range(24)],
+        "p25": None,
+        "p75": None,
+        "hasBand": False,
+        "unit": "ct/kWh",
+        "nowIndex": -1,
+        "now": None,
+        "min": 20.0,
+        "max": 43.0,
+        "avg": 31.5,
+    }
+    cache_path = data_dir / f"prices_{srv.CACHE_SCHEMA}_10115_{today}.json"
+    cache_path.write_text(json.dumps(cached))
+    # Back-date the file well past the old 600s TTL.
+    old_mtime = time.time() - 6 * 3600
+    import os
+
+    os.utime(cache_path, (old_mtime, old_mtime))
+
+    def fail_if_called(*a, **kw):
+        pytest.fail("urlopen called even though today's price cache was still valid")
+
+    with app.app_context():
+        app.config["SETTINGS_STORE"].update_section("app", {"timezone": "Europe/Berlin"})
+        with patch("urllib.request.urlopen", side_effect=fail_if_called):
+            result = srv.fetch(
+                {},
+                {"client_id": "cid", "client_secret": "csec", "zip": "10115"},
+                ctx={"data_dir": str(data_dir), "panel_w": 800, "panel_h": 480, "preview": False},
+            )
+
+    assert "error" not in result, result
+    assert result["today"] == cached["today"]
+    # now/nowIndex recomputed fresh (from the current local hour) even though
+    # the rest of the cache is hours old and stored nowIndex=-1/now=None.
+    now_hour = datetime.now(srv.app_timezone()).hour
+    assert result["nowIndex"] == now_hour
+    assert result["now"] == cached["today"][now_hour]
 
 
 def test_cooldown_prevents_hammering_after_rate_limit(app: Flask, tmp_path) -> None:

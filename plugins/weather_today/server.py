@@ -5,8 +5,9 @@ Open-Meteo's hourly array with ``forecast_days=1`` returns exactly today's
 24 slots starting at local midnight, so we paint the full calendar day
 (00:00–24:00) with no trimming — this is the "over the current day" framing
 the widget wants. A ``nowIndex`` marks the current hour so the client can
-draw a "now" rule. Cached for 10 minutes per (lat, lon) in the plugin's
-data_dir.
+draw a "now" rule. Cached for 1 hour per (lat, lon) in the plugin's
+data_dir — hourly weather doesn't shift enough within an hour to justify
+fetching more often.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from typing import Any
 
 from app.plugin_http import fetch_json
 
-CACHE_TTL_S = 600
+CACHE_TTL_S = 3600
 # See weather_now/server.py for the reasoning; short-fail so the composer's
 # hydration cap can't be blown by an Open-Meteo outage.
 HTTP_TIMEOUT_S = 5

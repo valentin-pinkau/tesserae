@@ -10,8 +10,11 @@ Ostrom needs two round trips:
      ``urllib.request`` directly (mirrors ha_core's POST).
   2. GET /spot-prices for the local-day window.
 
-Both responses are disk-cached (token by its own expiry, prices by day+zip)
-so warm renders inside the composer's ~6s budget make zero network calls.
+Both responses are disk-cached: the token until its own expiry, and prices
+for the entire calendar day (day-ahead prices never change once published;
+the cache filename is day+zip scoped so a new day always fetches fresh).
+Warm renders inside the composer's ~6s budget make zero network calls; only
+the "now" price/index are recomputed per render, from the cached day.
 
 Contract (see plugins/_template/server.py): fetch() is called fresh every
 render, must NEVER raise, and returns {"error": "..."} on any failure.
@@ -47,7 +50,13 @@ def _http_detail(err: urllib.error.HTTPError) -> str:
         body = err.read().decode("utf-8", errors="replace")[:160].strip()
     return f"HTTP {err.code}{f' — {body}' if body else ''}"
 
-PRICES_TTL_S = 600  # 10 min; day-ahead prices are stable, so a hit skips network
+# Day-ahead prices for a given date never change once published, and the
+# cache filename already encodes the date (see ``prices_path`` below), so a
+# cache hit is trusted for as long as the file exists — no wall-clock TTL.
+# A new calendar day always misses (different filename) and fetches fresh;
+# within a day, only the "now" pointer is recomputed (see _reslice_now),
+# never the network fetch itself.
+PRICES_CACHE_TTL_S = float("inf")
 HTTP_TIMEOUT_S = 6  # short-fail so a slow upstream can't blow the ~6s render budget
 USER_AGENT = "tesserae/0.1 (+ostrom_prices)"
 
@@ -280,7 +289,7 @@ def fetch(
     data_dir.mkdir(parents=True, exist_ok=True)
     prices_path = data_dir / f"prices_{CACHE_SCHEMA}_{zip_code or 'none'}_{today.isoformat()}.json"
 
-    cached = _read_cache(prices_path, PRICES_TTL_S)
+    cached = _read_cache(prices_path, PRICES_CACHE_TTL_S)
     if _cache_ok(cached):
         # Recompute the "now" pointer on cache hit so the highlight tracks the
         # current hour even when the price data itself is unchanged.
@@ -291,7 +300,7 @@ def fetch(
     # whatever the winner (or a cooldown from a just-failed winner) left
     # behind, instead of independently repeating the same request.
     with _fetch_lock:
-        cached = _read_cache(prices_path, PRICES_TTL_S)
+        cached = _read_cache(prices_path, PRICES_CACHE_TTL_S)
         if _cache_ok(cached):
             return _reslice_now(cached, zone, now)
 
