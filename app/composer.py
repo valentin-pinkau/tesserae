@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Final
 
 from flask import Blueprint, abort, current_app, render_template, request
@@ -253,11 +254,22 @@ def _parallel_fetch_plugin_data(
     # local proxy and won't follow us off the request thread.
     app = current_app._get_current_object()  # type: ignore[attr-defined]
 
+    widget_durations: dict[int, float] = {}
+
     def _worker(plugin_id: str, options: dict[str, Any], cell_w: int, cell_h: int) -> Any:
         with app.app_context():
             return _fetch_plugin_data(
                 plugin_id, options, panel_w, panel_h, preview, cell_w=cell_w, cell_h=cell_h
             )
+
+    def _timed_worker(
+        idx: int, plugin_id: str, options: dict[str, Any], cell_w: int, cell_h: int
+    ) -> Any:
+        t_widget_start = time.monotonic()
+        try:
+            return _worker(plugin_id, options, cell_w, cell_h)
+        finally:
+            widget_durations[idx] = time.monotonic() - t_widget_start
 
     results: dict[int, Any] = {}
     # Cells whose result was synthesised by US (executor caught an
@@ -278,10 +290,11 @@ def _parallel_fetch_plugin_data(
     # ``cancel_futures=True`` (3.9+) drops queued-but-unstarted work
     # immediately; still-running futures finish in the background but
     # don't hold us up. See v0.64.72 release notes.
+    t_batch_start = time.monotonic()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
     try:
         futures = {
-            pool.submit(_worker, plugin_id, options, cw, ch): idx
+            pool.submit(_timed_worker, idx, plugin_id, options, cw, ch): idx
             for idx, plugin_id, options, cw, ch in indexed
         }
         try:
@@ -319,6 +332,18 @@ def _parallel_fetch_plugin_data(
         # Non-blocking shutdown: cancel queued work, let in-flight
         # threads finish in the background. Composer returns now.
         pool.shutdown(wait=False, cancel_futures=True)
+
+    plugin_by_idx = {idx: plugin_id for idx, plugin_id, _opts, _cw, _ch in indexed}
+    per_widget = ", ".join(
+        f"{plugin_by_idx[idx]}#{idx}={dur:.2f}s"
+        for idx, dur in sorted(widget_durations.items(), key=lambda kv: -kv[1])
+    )
+    logger.info(
+        "latency: widget hydration batch total=%.3fs widgets=%d [%s]",
+        time.monotonic() - t_batch_start,
+        len(indexed),
+        per_widget,
+    )
 
     # Last-good fallback. Walk each cell's result; if it came back from
     # ``fetch()`` cleanly (whatever its shape, including widget-
@@ -624,12 +649,24 @@ def compose(page_id: str) -> str:
         panel = resolve_panel_for_page(page, devices, settings_store)
         panel_w, panel_h = panel.w, panel.h
     page_dict["panel"] = {"w": panel_w, "h": panel_h}
-    return render_template(
+    t_hydrate_start = time.monotonic()
+    hydrated_page = _hydrate_page(page_dict, preview=not for_push)
+    t_hydrate_end = time.monotonic()
+    html = render_template(
         "compose.html",
-        page=_hydrate_page(page_dict, preview=not for_push),
+        page=hydrated_page,
         for_push=for_push,
         preview_mode=preview_mode,
     )
+    logger.info(
+        "latency: compose page=%s panel=%dx%d hydrate=%.3fs template=%.3fs",
+        page_id,
+        panel_w,
+        panel_h,
+        t_hydrate_end - t_hydrate_start,
+        time.monotonic() - t_hydrate_end,
+    )
+    return html
 
 
 @bp.get("/_test/render")

@@ -388,6 +388,7 @@ def get_frame(device_id: str) -> Response:
     button_raw = request.args.get("button", "").strip()
     if button_svc is not None:
         if button_raw:
+            t_button_start = time.monotonic()
             try:
                 button_result = button_svc.handle_button(
                     device_id=device.id,
@@ -401,6 +402,13 @@ def get_frame(device_id: str) -> Response:
                     button_raw,
                 )
                 button_result = None
+            finally:
+                logger.info(
+                    "latency: /frame button dispatch device=%s button=%s took %.3fs",
+                    device.id,
+                    button_raw,
+                    time.monotonic() - t_button_start,
+                )
         else:
             # No button on this wake, still attach a read-only rotation
             # snapshot so the firmware always knows where it is.

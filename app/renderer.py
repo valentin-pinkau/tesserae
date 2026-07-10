@@ -527,11 +527,19 @@ class BrowserPool:
         if self._stopped:
             raise RuntimeError("browser pool has been stopped")
         fut: concurrent.futures.Future[bytes] = concurrent.futures.Future()
+        t_enqueue = time.monotonic()
         self._q.put((request, fut))
         # Allow the request's own timeout × max_attempts (so retries fit)
         # plus generous slack for launch + context setup; the pool isn't
         # meant to be a hard timeout layer.
-        return fut.result(timeout=(request.timeout_ms * request.max_attempts) / 1000 + 60)
+        try:
+            return fut.result(timeout=(request.timeout_ms * request.max_attempts) / 1000 + 60)
+        finally:
+            logger.info(
+                "latency: browser pool render (queue+launch+screenshot) url=%s took %.3fs",
+                request.url,
+                time.monotonic() - t_enqueue,
+            )
 
     def fetch_text(self, request: FetchRequest) -> str:
         """Fetch a URL through the pooled Chromium's network stack.
@@ -564,7 +572,12 @@ class BrowserPool:
                         if browser is not None:
                             with contextlib.suppress(Exception):
                                 browser.close()
+                        t_launch_start = time.monotonic()
                         browser = pw.chromium.launch(**_chromium_launch_kwargs())
+                        logger.info(
+                            "latency: browser pool cold launch took %.3fs",
+                            time.monotonic() - t_launch_start,
+                        )
                     # mypy can narrow ``request`` here but the queue's
                     # union widens ``fut`` to ``Future[str] | Future[bytes]``;
                     # the isinstance check on the request half doesn't

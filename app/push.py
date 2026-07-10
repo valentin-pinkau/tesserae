@@ -477,11 +477,20 @@ class PushManager:
         coalesce_key: str | None = None
         if device_ids and len(device_ids) == 1:
             coalesce_key = next(iter(device_ids))
+        t_lock_wait_start = time.monotonic()
         supersede = self._acquire_or_supersede(
             device_id=coalesce_key,
             source=source,
             target=page_id,
             bypass_coalesce=bypass_coalesce,
+        )
+        lock_wait_s = time.monotonic() - t_lock_wait_start
+        logger.info(
+            "latency: push lock wait page=%s source=%s waited %.3fs%s",
+            page_id,
+            source,
+            lock_wait_s,
+            " (superseded)" if supersede is not None else "",
         )
         if supersede is not None:
             result = PushResult(
@@ -775,6 +784,7 @@ class PushManager:
             compose_url = to_loopback_url(
                 f"{base_url}/compose/{page_id}?for_push=1&w={panel.w}&h={panel.h}"
             )
+            t_render_start = time.monotonic()
             try:
                 composition_png = render_to_png(
                     RenderRequest(
@@ -801,6 +811,15 @@ class PushManager:
                     )
                 )
                 continue
+            render_s = time.monotonic() - t_render_start
+            logger.info(
+                "latency: push render page=%s panel=%dx%d took %.3fs",
+                page_id,
+                panel.w,
+                panel.h,
+                render_s,
+            )
+            t_fanout_start = time.monotonic()
             result = self._fan_out(
                 composition_png,
                 panel.model_dump(),
@@ -808,6 +827,13 @@ class PushManager:
                 target=page_id,
                 started=started,
                 device_filters=set(group_dids) if group_dids else None,
+            )
+            logger.info(
+                "latency: push fan_out page=%s panel=%dx%d took %.3fs",
+                page_id,
+                panel.w,
+                panel.h,
+                time.monotonic() - t_fanout_start,
             )
             all_renderers.extend(result.renderers)
             group_results.append(result)
@@ -829,11 +855,19 @@ class PushManager:
         else:
             status = "sent"
         digest = next((r.composition_digest for r in group_results if r.composition_digest), "")
+        total_s = time.monotonic() - started
+        logger.info(
+            "latency: push total page=%s source=%s status=%s took %.3fs",
+            page_id,
+            source,
+            status,
+            total_s,
+        )
         return PushResult(
             status=status,
             page_id=page_id,
             composition_digest=digest,
-            duration_s=time.monotonic() - started,
+            duration_s=total_s,
             renderers=all_renderers,
             error=None if status == "sent" else "one or more panels failed to render/publish",
         )

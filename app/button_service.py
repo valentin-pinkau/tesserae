@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -264,6 +265,7 @@ class ButtonService:
             return result_unmapped
 
         # Dispatch. Malformed spec / unknown action -> log + no-op.
+        t_dispatch_start = time.monotonic()
         try:
             result: ActionResult = dispatch(spec, ctx)
         except ButtonActionError as exc:
@@ -308,6 +310,12 @@ class ButtonService:
                 error=str(exc),
             )
             return result_error
+        log.info(
+            "latency: button dispatch device=%s spec=%s took %.3fs",
+            device_id,
+            spec,
+            time.monotonic() - t_dispatch_start,
+        )
 
         # Compute override_until only if the action actually changed
         # the rotation position (or was a rotation-manipulating action
@@ -349,6 +357,7 @@ class ButtonService:
             elif rotation is not None and (rotation_changed or result.force_refresh):
                 pushed_page_id = rotation.steps[result.new_step_index].page_id
             if pushed_page_id is not None:
+                t_push_start = time.monotonic()
                 try:
                     push_result = pusher.push(
                         pushed_page_id,
@@ -364,6 +373,13 @@ class ButtonService:
                         spec,
                     )
                     push_exception_error = f"{type(exc).__name__}: {exc}"
+                finally:
+                    log.info(
+                        "latency: button push device=%s page=%s took %.3fs (includes lock wait)",
+                        device_id,
+                        pushed_page_id,
+                        time.monotonic() - t_push_start,
+                    )
 
         # webhook:<url> action: fire a POST asynchronously so /frame
         # doesn't block on external endpoints. ``dispatch`` has already
