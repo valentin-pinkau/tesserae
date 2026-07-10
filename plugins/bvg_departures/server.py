@@ -97,7 +97,7 @@ def fetch(
     del settings
     stop_id = str(options.get("stop_id") or DEFAULT_STOP_ID).strip() or DEFAULT_STOP_ID
     stop_name = str(options.get("stop_name") or "").strip() or "S Julius-Leber-Brücke"
-    max_rows = max(1, min(20, int(options.get("max_rows") or 6)))
+    max_rows = max(1, min(20, int(options.get("max_rows") or 10)))
 
     data_dir = Path(ctx["data_dir"])
     data_dir.mkdir(parents=True, exist_ok=True)
