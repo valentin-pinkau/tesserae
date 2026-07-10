@@ -34,37 +34,11 @@ def _cached(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def fetch(
-    options: dict[str, Any], settings: dict[str, Any], *, ctx: dict[str, Any]
-) -> dict[str, Any]:
-    del settings
-    stop_id = str(options.get("stop_id") or DEFAULT_STOP_ID).strip() or DEFAULT_STOP_ID
-    stop_name = str(options.get("stop_name") or "").strip() or "S Julius-Leber-Brücke"
-    max_rows = max(1, min(20, int(options.get("max_rows") or 6)))
+PRODUCTS = ("suburban", "subway", "tram", "bus", "ferry", "express", "regional")
+GROUPS = (("suburban", "S-Bahn"), ("bus", "Bus"))
 
-    data_dir = Path(ctx["data_dir"])
-    data_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = data_dir / f"departures_{stop_id}.json"
-    cached = _cached(cache_path)
-    if cached is not None:
-        cached["stop_name"] = stop_name
-        return cached
 
-    # Ask for more than max_rows since cancelled trips get filtered out
-    # client-side of the fetch (i.e. here), not by the upstream API.
-    url = f"{BASE}/stops/{stop_id}/departures?duration=60&results={max_rows * 3}&linesOfStops=false"
-    try:
-        payload = fetch_json(url, headers={"User-Agent": USER_AGENT}, timeout=HTTP_TIMEOUT_S, retries=0)
-    except Exception as err:
-        return {"error": f"{type(err).__name__}: {err}", "stop_name": stop_name}
-
-    if isinstance(payload, dict) and payload.get("error"):
-        return {"error": str(payload.get("msg") or "Stop not found."), "stop_name": stop_name}
-
-    raw = payload.get("departures") if isinstance(payload, dict) else None
-    if not isinstance(raw, list):
-        return {"error": "Unexpected response from BVG.", "stop_name": stop_name}
-
+def _parse_departures(raw: list[Any], max_rows: int) -> list[dict[str, Any]]:
     now = datetime.now().astimezone()
     departures = []
     for dep in raw:
@@ -97,8 +71,58 @@ def fetch(
         )
         if len(departures) >= max_rows:
             break
+    return departures
 
-    result: dict[str, Any] = {"stop_name": stop_name, "departures": departures}
+
+def _fetch_group(stop_id: str, product: str, max_rows: int) -> list[dict[str, Any]]:
+    # Ask for more than max_rows since cancelled trips get filtered out
+    # client-side of the fetch (i.e. here), not by the upstream API.
+    filters = "&".join(f"{p}={'true' if p == product else 'false'}" for p in PRODUCTS)
+    url = (
+        f"{BASE}/stops/{stop_id}/departures"
+        f"?duration=60&results={max_rows * 3}&linesOfStops=false&{filters}"
+    )
+    payload = fetch_json(url, headers={"User-Agent": USER_AGENT}, timeout=HTTP_TIMEOUT_S, retries=0)
+    if isinstance(payload, dict) and payload.get("error"):
+        raise ValueError(str(payload.get("msg") or "Stop not found."))
+    raw = payload.get("departures") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        raise ValueError("Unexpected response from BVG.")
+    return _parse_departures(raw, max_rows)
+
+
+def fetch(
+    options: dict[str, Any], settings: dict[str, Any], *, ctx: dict[str, Any]
+) -> dict[str, Any]:
+    del settings
+    stop_id = str(options.get("stop_id") or DEFAULT_STOP_ID).strip() or DEFAULT_STOP_ID
+    stop_name = str(options.get("stop_name") or "").strip() or "S Julius-Leber-Brücke"
+    max_rows = max(1, min(20, int(options.get("max_rows") or 6)))
+
+    data_dir = Path(ctx["data_dir"])
+    data_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = data_dir / f"departures_{stop_id}.json"
+    cached = _cached(cache_path)
+    if cached is not None:
+        cached["stop_name"] = stop_name
+        return cached
+
+    groups = []
+    errors = []
+    for product, label in GROUPS:
+        try:
+            departures = _fetch_group(stop_id, product, max_rows)
+        except Exception as err:
+            errors.append(err)
+            departures = []
+        groups.append({"key": product, "label": label, "departures": departures})
+
+    if len(errors) == len(GROUPS):
+        err = errors[0]
+        message = str(err) if isinstance(err, ValueError) else f"{type(err).__name__}: {err}"
+        return {"error": message, "stop_name": stop_name}
+
+    result: dict[str, Any] = {"stop_name": stop_name, "groups": groups}
     with contextlib.suppress(OSError):
         cache_path.write_text(json.dumps(result), encoding="utf-8")
     return result

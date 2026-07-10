@@ -26,8 +26,9 @@
     {
       "name": "max_rows",
       "type": "number",
-      "label": "Max departures",
-      "default": 6
+      "label": "Departures per group",
+      "default": 6,
+      "help": "How many departures to show for each of the S-Bahn and Bus groups."
     }
   ],
   "render": {

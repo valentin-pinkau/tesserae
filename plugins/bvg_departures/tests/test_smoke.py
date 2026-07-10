@@ -36,7 +36,7 @@ def _skip_if_not_loaded(app: Flask) -> None:
         pytest.skip(f"{PLUGIN_ID!r} not loaded")
 
 
-def _departures_body() -> bytes:
+def _suburban_body() -> bytes:
     now = datetime.now().astimezone()
 
     def iso(minutes: int) -> str:
@@ -53,15 +53,6 @@ def _departures_body() -> bytes:
             "platform": "1",
         },
         {
-            "line": {"name": "M43", "product": "bus"},
-            "direction": "U Berliner Str.",
-            "when": iso(11),
-            "plannedWhen": iso(8),
-            "delay": 180,
-            "cancelled": False,
-            "platform": None,
-        },
-        {
             "line": {"name": "S1", "product": "suburban"},
             "direction": "S Wannsee Bhf (Berlin)",
             "when": None,
@@ -72,6 +63,30 @@ def _departures_body() -> bytes:
         },
     ]
     return json.dumps({"departures": departures}).encode("utf-8")
+
+
+def _bus_body() -> bytes:
+    now = datetime.now().astimezone()
+
+    def iso(minutes: int) -> str:
+        return (now + timedelta(minutes=minutes)).isoformat()
+
+    departures = [
+        {
+            "line": {"name": "M43", "product": "bus"},
+            "direction": "U Berliner Str.",
+            "when": iso(11),
+            "plannedWhen": iso(8),
+            "delay": 180,
+            "cancelled": False,
+            "platform": None,
+        },
+    ]
+    return json.dumps({"departures": departures}).encode("utf-8")
+
+
+def _empty_body() -> bytes:
+    return json.dumps({"departures": []}).encode("utf-8")
 
 
 @pytest.mark.parametrize("size", ["xs", "sm", "md", "lg"])
@@ -85,17 +100,24 @@ def test_renders(app: Flask, client: FlaskClient, size: str) -> None:
             {PLUGIN_ID: {"stop_id": "900057104", "stop_name": "S Julius-Leber-Brücke"}},
         )
 
-    with patch("urllib.request.urlopen", side_effect=[_FakeResp(_departures_body())]):
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=[_FakeResp(_suburban_body()), _FakeResp(_bus_body())],
+    ):
         resp = client.get(f"/_test/render?plugin={PLUGIN_ID}&size={size}")
 
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert f'data-plugin="{PLUGIN_ID}"' in body
     assert "S Julius-Leber-Br" in body
+    assert '"label": "S-Bahn"' in body or '"label":"S-Bahn"' in body
+    assert '"label": "Bus"' in body or '"label":"Bus"' in body
     assert '"line": "S1"' in body or '"line":"S1"' in body
     assert '"line": "M43"' in body or '"line":"M43"' in body
     # The cancelled S1 must not appear alongside the on-time one.
     assert body.count('"line": "S1"') + body.count('"line":"S1"') == 1
+    # S-Bahn group renders above the Bus group.
+    assert body.index("S-Bahn") < body.index("Bus")
 
 
 def test_no_departures_shows_friendly_empty_state(app: Flask, client: FlaskClient) -> None:
@@ -108,7 +130,7 @@ def test_no_departures_shows_friendly_empty_state(app: Flask, client: FlaskClien
 
     with patch(
         "urllib.request.urlopen",
-        side_effect=[_FakeResp(json.dumps({"departures": []}).encode("utf-8"))],
+        side_effect=[_FakeResp(_empty_body()), _FakeResp(_empty_body())],
     ):
         resp = client.get(f"/_test/render?plugin={PLUGIN_ID}&size=md")
 
