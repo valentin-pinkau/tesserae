@@ -51,18 +51,41 @@ _CHROMIUM_SIDECAR: Final[Path] = (
 )
 
 
+
+# Headless Chromium defaults to software rasterization (SwiftShader) for
+# canvas/WebGL, which is the CPU floor Chart.js construction hits on
+# weak/no-GPU hosts (profiled at 0.1-0.5s per chart on a Raspberry Pi 4).
+# ``TESSERAE_CHROMIUM_GPU_ARGS=1`` opts into EGL + GPU rasterization so
+# canvas drawing can use the host's real GPU (e.g. the Pi 4's VideoCore
+# VI, via Mesa's V3D driver) instead of software fallback. Opt-in, not
+# default: GPU flags are a no-op at best and a broken/blank render at
+# worst on a host with no working GPU device node or Mesa driver, and
+# that failure mode isn't something to risk on installs we can't test.
+_GPU_ARGS: Final[list[str]] = [
+    "--use-gl=egl",
+    "--enable-gpu-rasterization",
+    "--enable-zero-copy",
+    "--ignore-gpu-blocklist",
+    "--disable-gpu-sandbox",
+]
+
+
 def _chromium_launch_kwargs() -> dict[str, Any]:
     """Resolve the Chromium binary in order: ``TESSERAE_CHROMIUM_PATH`` env
     var → ``data/core/.chromium`` sidecar (written by install.sh when
     Playwright has no prebuilt for the host's OS+arch) → empty (Playwright
-    uses its bundled binary)."""
+    uses its bundled binary). Also opts into GPU rasterization args when
+    ``TESSERAE_CHROMIUM_GPU_ARGS=1`` (see ``_GPU_ARGS``)."""
     path = os.environ.get("TESSERAE_CHROMIUM_PATH", "").strip()
     if not path:
         try:
             path = _CHROMIUM_SIDECAR.read_text(encoding="utf-8").strip()
         except OSError:
             path = ""
-    return {"executable_path": path} if path else {}
+    kwargs: dict[str, Any] = {"executable_path": path} if path else {}
+    if os.environ.get("TESSERAE_CHROMIUM_GPU_ARGS", "").strip() == "1":
+        kwargs["args"] = _GPU_ARGS
+    return kwargs
 
 
 def to_loopback_url(url: str) -> str:

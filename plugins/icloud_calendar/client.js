@@ -180,6 +180,7 @@ const HERO_EMPTY = `
   </div>`;
 
 export default function render(shadow, ctx) {
+  const __t0 = performance.now();
   const data = ctx?.data ?? {};
   const size = ctx?.cell?.size || "md";
   const opts = ctx?.cell?.options || {};
@@ -193,6 +194,7 @@ export default function render(shadow, ctx) {
         <div class="w-title"><i class="ph-bold ph-warning-circle" style="color:var(--accent-1)"></i><h3>iCloud Calendar</h3></div>
         <div class="w-body"><p class="u-muted">${escapeHtml(data.error)}</p></div>
       </div>`;
+    console.log(`[icloud_calendar] render() took ${(performance.now() - __t0).toFixed(2)}ms (error path)`);
     return;
   }
 
@@ -418,4 +420,5 @@ export default function render(shadow, ctx) {
         ${bodyHtml}
       </div>
     </div>`;
+  console.log(`[icloud_calendar] render() took ${(performance.now() - __t0).toFixed(2)}ms`);
 }
