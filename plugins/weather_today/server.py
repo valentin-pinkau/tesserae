@@ -4,10 +4,17 @@ weather_today.
 Open-Meteo's hourly array with ``forecast_days=1`` returns exactly today's
 24 slots starting at local midnight, so we paint the full calendar day
 (00:00–24:00) with no trimming — this is the "over the current day" framing
-the widget wants. A ``nowIndex`` marks the current hour so the client can
-draw a "now" rule. Cached for 1 hour per (lat, lon) in the plugin's
+the widget wants. Cached for 1 hour per (lat, lon) in the plugin's
 data_dir — hourly weather doesn't shift enough within an hour to justify
 fetching more often.
+
+The "now" fields (``nowIndex``/``nowTemp``/``nowRain``/``nowUv``) are the one
+exception: they're recomputed from the current wall clock on *every* call —
+including cache hits — using the response's ``utc_offset_seconds`` so the
+"now" marker on the chart advances hour to hour even while the underlying
+data serves from cache. If the cached day has rolled past local midnight, the
+cache is treated as stale and refetched rather than mislabelling yesterday's
+slots as today's.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import json
 import time
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -37,26 +44,38 @@ def _cached(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _now_index(times: list[str], now_iso: str | None) -> int | None:
-    """Index of the hourly slot whose hour matches ``now`` (floored to the
-    hour). Returns ``None`` if the current time can't be located in the
-    day's slots (e.g. an unparseable timestamp)."""
-    if not now_iso:
-        return None
-    try:
-        now_hour = datetime.fromisoformat(now_iso).replace(
-            minute=0, second=0, microsecond=0
-        )
-    except (ValueError, TypeError):
-        return None
-    for i, iso in enumerate(times):
-        try:
-            t = datetime.fromisoformat(iso)
-        except (ValueError, TypeError):
-            continue
-        if t.replace(minute=0, second=0, microsecond=0) == now_hour:
-            return i
-    return None
+def _local_now(utc_offset_s: int) -> tuple[str, str]:
+    """Current (hour, date) as ``("HH", "YYYY-MM-DD")`` in the location's
+    local time, derived from Open-Meteo's ``utc_offset_seconds`` rather than
+    a fresh geocode lookup."""
+    local = datetime.now(UTC) + timedelta(seconds=utc_offset_s)
+    return local.strftime("%H"), local.strftime("%Y-%m-%d")
+
+
+def _with_now(result: dict[str, Any]) -> dict[str, Any]:
+    """Overlay nowIndex/nowTemp/nowRain/nowUv computed from the current wall
+    clock, so they stay live across cache hits instead of freezing at the
+    hour the data was fetched."""
+    hours: list[str] = result.get("hours") or []
+    temps: list[float] = result.get("temps") or []
+    rain: list[int] = result.get("rain") or []
+    uv: list[float] = result.get("uv") or []
+    hour_str, _ = _local_now(int(result.get("utcOffsetS", 0)))
+    now_index = hours.index(hour_str) if hour_str in hours else None
+
+    result["nowIndex"] = now_index
+    result["nowTemp"] = (
+        round(temps[now_index])
+        if now_index is not None and now_index < len(temps)
+        else None
+    )
+    result["nowRain"] = (
+        rain[now_index] if now_index is not None and now_index < len(rain) else None
+    )
+    result["nowUv"] = (
+        uv[now_index] if now_index is not None and now_index < len(uv) else None
+    )
+    return result
 
 
 def fetch(
@@ -89,20 +108,25 @@ def fetch(
     cache_path = data_dir / f"today_{lat:.3f}_{lon:.3f}.json"
     cached = _cached(cache_path)
     if cached is not None:
-        # ``label`` / ``place`` are UI strings from the cell editor, not part
-        # of the upstream response. Overlay on cache hit so a rename shows up
-        # on the next preview instead of waiting out the cache TTL.
-        fresh_label = options.get("label", "")
-        cached["label"] = fresh_label
-        cached["place"] = fresh_label
-        return cached
+        _, today = _local_now(int(cached.get("utcOffsetS", 0)))
+        if cached.get("date") == today:
+            # ``label`` / ``place`` are UI strings from the cell editor, not
+            # part of the upstream response. Overlay on cache hit so a
+            # rename shows up on the next preview instead of waiting out the
+            # cache TTL.
+            fresh_label = options.get("label", "")
+            cached["label"] = fresh_label
+            cached["place"] = fresh_label
+            return _with_now(cached)
+        # Local midnight rolled over since this was fetched — "today" now
+        # means a different calendar day than the cached slots cover, so the
+        # cache is stale regardless of its TTL. Fall through to refetch.
 
     # forecast_days=1 + timezone=auto → today's 24 hourly slots aligned to
     # the location's local midnight.
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
-        "&current=temperature_2m"
         "&hourly=temperature_2m,precipitation_probability,uv_index"
         "&forecast_days=1&timezone=auto"
     )
@@ -117,7 +141,6 @@ def fetch(
         return {"error": f"{type(err).__name__}: {err}"}
 
     hourly = payload.get("hourly") or {}
-    current = payload.get("current") or {}
     times: list[str] = hourly.get("time") or []
     temps_raw: list[float | None] = hourly.get("temperature_2m") or []
     rain_raw: list[float | None] = hourly.get("precipitation_probability") or []
@@ -137,11 +160,7 @@ def fetch(
         rain.append(int(p) if isinstance(p, int | float) else 0)
         uv.append(round(float(u), 1) if isinstance(u, int | float) else 0.0)
 
-    now_index = _now_index(times, current.get("time"))
-    now_temp = current.get("temperature_2m")
-    now_rain = rain[now_index] if now_index is not None and now_index < len(rain) else None
-    now_uv = uv[now_index] if now_index is not None and now_index < len(uv) else None
-
+    date = times[0].split("T", 1)[0] if times and "T" in times[0] else ""
     result = {
         "label": options.get("label", ""),
         "place": options.get("label", ""),
@@ -149,11 +168,9 @@ def fetch(
         "temps": temps,
         "rain": rain,
         "uv": uv,
-        "nowIndex": now_index,
-        "nowTemp": round(float(now_temp)) if isinstance(now_temp, int | float) else None,
-        "nowRain": int(now_rain) if isinstance(now_rain, int | float) else None,
-        "nowUv": round(float(now_uv), 1) if isinstance(now_uv, int | float) else None,
+        "date": date,
+        "utcOffsetS": int(payload.get("utc_offset_seconds") or 0),
     }
     with contextlib.suppress(OSError):
         cache_path.write_text(json.dumps(result), encoding="utf-8")
-    return result
+    return _with_now(result)
