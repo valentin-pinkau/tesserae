@@ -269,6 +269,7 @@ export default function render(shadow, ctx) {
     },
   };
 
+  const __chartT0 = performance.now();
   const chart = new window.Chart(canvas, {
     type: "line",
     data: { labels, datasets },
@@ -309,5 +310,6 @@ export default function render(shadow, ctx) {
       },
     },
   });
+  console.log(`[ostrom_prices] new Chart() took ${(performance.now() - __chartT0).toFixed(2)}ms`);
   canvas._chart = chart;
 }

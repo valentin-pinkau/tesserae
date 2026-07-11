@@ -96,7 +96,9 @@ export function tokens(host) {
     "--accent-1", "--accent-2", "--accent-3", "--accent-4", "--accent-5", "--accent-6",
     "--surface", "--surface-sunken", "--text-primary", "--text-secondary", "--text-muted",
   ];
+  const __t0 = performance.now();
   const { colors, fontFamily: probedFontFamily } = probeBatch(parent, colorNames, "--font-family");
+  console.log(`[spectra-chart] probeBatch took ${(performance.now() - __t0).toFixed(2)}ms`);
   const fallbacks = [
     FALLBACK.accent1, FALLBACK.accent2, FALLBACK.accent3, FALLBACK.accent4,
     FALLBACK.accent5, FALLBACK.accent6, FALLBACK.surface, FALLBACK.surfaceSunken,

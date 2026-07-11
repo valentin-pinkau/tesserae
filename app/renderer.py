@@ -290,6 +290,13 @@ def _screenshot_attempt(browser: Browser, request: RenderRequest, attempt: int) 
     context = browser.new_context(**context_kwargs)
     try:
         page = context.new_page()
+        if request.is_composer:
+            # Surfaces widget-side timing (e.g. spectra-chart.js's
+            # probeBatch/Chart.js construction logs) in the same server
+            # log stream as the phase timings below, so a slow composer
+            # render can be traced into the client without needing
+            # DevTools attached to the headless browser.
+            page.on("console", lambda msg: logger.info("browser console: %s", msg.text))
         page.set_default_timeout(request.timeout_ms)
         # ``set_default_timeout`` covers actions (evaluate, click, …) but
         # NOT navigation, ``goto`` uses Playwright's 30s default unless
