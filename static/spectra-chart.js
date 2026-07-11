@@ -18,13 +18,14 @@ const FALLBACK = {
   fontFamily: "Helvetica Neue, Arial, sans-serif",
 };
 
-// Probe the active CSS cascade for a token value. We render an invisible
-// element next to the chart host (so it inherits the same per-cell theme
-// override + page-level data-theme that the chart should be using),
-// apply the token to a real CSS property, then read the resolved style
-// back. ``transparent`` as the var() fallback computes to
-// ``rgba(0, 0, 0, 0)``, a value no Spectra theme produces, so we can
-// distinguish "the var resolved" from "the var was undefined."
+// Probe the active CSS cascade for a batch of token values in one pass.
+// We render invisible probe elements next to the chart host (so they
+// inherit the same per-cell theme override + page-level data-theme that
+// the chart should be using), apply each token to a real CSS property,
+// then read the resolved styles back. ``transparent`` as the var()
+// fallback computes to ``rgba(0, 0, 0, 0)``, a value no Spectra theme
+// produces, so we can distinguish "the var resolved" from "the var was
+// undefined."
 //
 // Why not `getComputedStyle(host).getPropertyValue('--accent-1')`?
 // That path returns empty for inherited custom properties in some
@@ -33,30 +34,45 @@ const FALLBACK = {
 // and the var IS defined upstream. Probing through a real property
 // forces var() substitution through the rendering pipeline, so we
 // get the actual cascaded value every time.
-function probeColor(parent, name) {
-  const probe = document.createElement("span");
-  probe.style.cssText =
-    "position:absolute;visibility:hidden;width:0;height:0;pointer-events:none;";
-  probe.style.color = `var(${name}, transparent)`;
-  parent.appendChild(probe);
-  const v = getComputedStyle(probe).color || "";
-  probe.remove();
-  return v === "rgba(0, 0, 0, 0)" ? "" : v;
-}
+//
+// All probe spans are appended in a single batch (one DOM write), then
+// every ``getComputedStyle`` read happens with no further mutation in
+// between, so the browser only has to flush layout/style once for the
+// whole batch instead of once per token (12 vars => 12 forced
+// recalcs => 1). This was the dominant cost in the composer's
+// "compose" render phase on pages with multiple chart widgets.
+const FONT_SENTINEL = "__spectra_missing_family__";
 
-// Same trick for --font-family. A made-up family name as the var()
-// fallback is unique enough to detect, no real font ships with that
-// name, so finding it in the resolved string means the var was unset.
-function probeFontFamily(parent, name) {
-  const SENTINEL = "__spectra_missing_family__";
-  const probe = document.createElement("span");
-  probe.style.cssText =
+function probeBatch(parent, colorNames, fontFamilyName) {
+  const container = document.createElement("div");
+  container.style.cssText =
     "position:absolute;visibility:hidden;width:0;height:0;pointer-events:none;";
-  probe.style.fontFamily = `var(${name}, ${SENTINEL})`;
-  parent.appendChild(probe);
-  const v = getComputedStyle(probe).fontFamily || "";
-  probe.remove();
-  return v.includes(SENTINEL) ? "" : v;
+  const colorSpans = colorNames.map((name) => {
+    const span = document.createElement("span");
+    span.style.color = `var(${name}, transparent)`;
+    container.appendChild(span);
+    return span;
+  });
+  let fontSpan = null;
+  if (fontFamilyName) {
+    fontSpan = document.createElement("span");
+    fontSpan.style.fontFamily = `var(${fontFamilyName}, ${FONT_SENTINEL})`;
+    container.appendChild(fontSpan);
+  }
+  parent.appendChild(container);
+
+  const colors = colorSpans.map((span) => {
+    const v = getComputedStyle(span).color || "";
+    return v === "rgba(0, 0, 0, 0)" ? "" : v;
+  });
+  let fontFamily = "";
+  if (fontSpan) {
+    const v = getComputedStyle(fontSpan).fontFamily || "";
+    fontFamily = v.includes(FONT_SENTINEL) ? "" : v;
+  }
+
+  container.remove();
+  return { colors, fontFamily };
 }
 
 export function tokens(host) {
@@ -76,29 +92,34 @@ export function tokens(host) {
   if (!parent) return { ...FALLBACK };
 
   const missing = [];
-  const cget = (name, fallback) => {
-    const v = probeColor(parent, name);
-    if (!v) missing.push(name);
-    return v || fallback;
-  };
-  const fget = (name, fallback) => {
-    const v = probeFontFamily(parent, name);
-    if (!v) missing.push(name);
-    return v || fallback;
-  };
+  const colorNames = [
+    "--accent-1", "--accent-2", "--accent-3", "--accent-4", "--accent-5", "--accent-6",
+    "--surface", "--surface-sunken", "--text-primary", "--text-secondary", "--text-muted",
+  ];
+  const { colors, fontFamily: probedFontFamily } = probeBatch(parent, colorNames, "--font-family");
+  const fallbacks = [
+    FALLBACK.accent1, FALLBACK.accent2, FALLBACK.accent3, FALLBACK.accent4,
+    FALLBACK.accent5, FALLBACK.accent6, FALLBACK.surface, FALLBACK.surfaceSunken,
+    FALLBACK.textPrimary, FALLBACK.textSecondary, FALLBACK.textMuted,
+  ];
+  const resolved = colors.map((v, i) => {
+    if (!v) missing.push(colorNames[i]);
+    return v || fallbacks[i];
+  });
+  if (!probedFontFamily) missing.push("--font-family");
   const result = {
-    accent1: cget("--accent-1", FALLBACK.accent1),
-    accent2: cget("--accent-2", FALLBACK.accent2),
-    accent3: cget("--accent-3", FALLBACK.accent3),
-    accent4: cget("--accent-4", FALLBACK.accent4),
-    accent5: cget("--accent-5", FALLBACK.accent5),
-    accent6: cget("--accent-6", FALLBACK.accent6),
-    surface: cget("--surface", FALLBACK.surface),
-    surfaceSunken: cget("--surface-sunken", FALLBACK.surfaceSunken),
-    textPrimary: cget("--text-primary", FALLBACK.textPrimary),
-    textSecondary: cget("--text-secondary", FALLBACK.textSecondary),
-    textMuted: cget("--text-muted", FALLBACK.textMuted),
-    fontFamily: fget("--font-family", FALLBACK.fontFamily),
+    accent1: resolved[0],
+    accent2: resolved[1],
+    accent3: resolved[2],
+    accent4: resolved[3],
+    accent5: resolved[4],
+    accent6: resolved[5],
+    surface: resolved[6],
+    surfaceSunken: resolved[7],
+    textPrimary: resolved[8],
+    textSecondary: resolved[9],
+    textMuted: resolved[10],
+    fontFamily: probedFontFamily || FALLBACK.fontFamily,
   };
   if (missing.length) {
     console.warn(

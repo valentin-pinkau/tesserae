@@ -125,9 +125,24 @@ class EventLog:
         used as context managers commit/rollback but do NOT close, so
         we'd leak file descriptors. ``check_same_thread=False`` lets the
         scheduler / MQTT dispatcher threads share the same EventLog
-        instance, the lock around this helper serialises access."""
+        instance, the lock around this helper serialises access.
+
+        WAL + ``synchronous=NORMAL``: profiling a page push showed
+        ``record()`` (one call per renderer in a fan-out, so ~10/push)
+        spending most of its time in ``sqlite3.Connection.commit()``.
+        The default rollback-journal mode fsyncs twice per commit
+        (journal + main db file); WAL only fsyncs the WAL file, and
+        ``NORMAL`` skips the fsync between WAL writes entirely (only
+        at checkpoint), trading "durable across an OS crash mid-write"
+        for a lot less commit latency, an acceptable trade for a
+        history log. ``journal_mode`` is a persistent property of the
+        db file (set once, survives future connections/processes) but
+        cheap to re-issue; ``synchronous`` is per-connection and must
+        be set every time since we open a fresh connection per call."""
         conn = sqlite3.connect(self._path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         try:
             yield conn
         finally:

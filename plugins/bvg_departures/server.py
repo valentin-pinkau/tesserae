@@ -7,6 +7,7 @@ meant to look "live" on every composer render.
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import json
 import time
@@ -107,15 +108,25 @@ def fetch(
         cached["stop_name"] = stop_name
         return cached
 
-    groups = []
-    errors = []
-    for product, label in GROUPS:
-        try:
-            departures = _fetch_group(stop_id, product, max_rows)
-        except Exception as err:
-            errors.append(err)
-            departures = []
-        groups.append({"key": product, "label": label, "departures": departures})
+    # The two groups are independent BVG requests; fetching them
+    # concurrently instead of one-after-another roughly halves this
+    # widget's cache-miss cost (each round trip is ~150-250ms).
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(GROUPS)) as pool:
+        futures = {
+            pool.submit(_fetch_group, stop_id, product, max_rows): (product, label)
+            for product, label in GROUPS
+        }
+        results: dict[str, list[dict[str, Any]]] = {}
+        errors: list[Exception] = []
+        for fut in futures:
+            product, _label = futures[fut]
+            try:
+                results[product] = fut.result()
+            except Exception as err:
+                errors.append(err)
+                results[product] = []
+
+    groups = [{"key": product, "label": label, "departures": results[product]} for product, label in GROUPS]
 
     if len(errors) == len(GROUPS):
         err = errors[0]
