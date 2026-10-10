@@ -99,7 +99,9 @@ export default function render(shadow, ctx) {
   const hoursRaw = Array.isArray(data.hours) ? data.hours.map(Number) : [];
   const p25Raw = Array.isArray(data.p25) ? data.p25 : null;
   const p75Raw = Array.isArray(data.p75) ? data.p75 : null;
-  const hasBand = Boolean(data.hasBand) && p25Raw && p75Raw;
+  // The 7-day "typical" band is opt-in: on the multi-day chart it only
+  // covers today's narrow segment and mostly read as clutter.
+  const hasBand = opts.typical_band === true && Boolean(data.hasBand) && p25Raw && p75Raw;
   const unit = data.unit || "ct/kWh";
   const hasData = todayRaw.length >= 2;
   const windowHours = Number(data.windowHours) || 3;

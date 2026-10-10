@@ -52,6 +52,13 @@
       "label": "Show next days",
       "default": true,
       "help": "Extend the chart over the next days: tomorrow's real prices once published (~13:00), then a forecast from wind and solar weather (dashed). Hidden on the smallest cell size."
+    },
+    {
+      "name": "typical_band",
+      "type": "boolean",
+      "label": "Show typical range",
+      "default": false,
+      "help": "Hatched band behind today's line: the usual price range for each hour over the past 7 days (25th\u201375th percentile)."
     }
   ],
   "render": {
