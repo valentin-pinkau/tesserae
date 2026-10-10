@@ -114,39 +114,138 @@ function dayCountForSize(size) {
   return 1; // xs / sm
 }
 
-// One positioned event block. `opts.showSub` adds the time line,
-// `opts.showLoc` the location row (only when the block is tall enough
-// to fit them without clipping).
-function eventBlock(ev, range, span, opts) {
-  const s = parseTime(ev.start);
-  if (s == null) return "";
-  const e = parseTime(ev.end) ?? s + 1;
-  const rawTop = ((s - range.start) / span) * 100;
-  const rawHeight = Math.max(2, ((e - s) / span) * 100);
-  const top = Math.max(0, Math.min(rawTop, 100 - rawHeight));
+// Lay out one day's timed events so none hides another, the way desktop
+// calendars do it:
+//  * Events starting within CASCADE_MIN_GAP_H of each other while
+//    overlapping form a group and split the width side by side (neither
+//    title would get a line otherwise).
+//  * A group that starts later, while earlier ones are still running, is
+//    cascaded: indented one CASCADE_STEP per still-running level and drawn
+//    on top, so the earlier event's title stays readable above it and its
+//    spine stays visible in the indent.
+// Side-by-side splitting alone left 3-4 characters per line in the narrow
+// week columns once three events overlapped.
+//
+// Each event also gets a label room: from its start down to the next
+// event that starts below it and covers the same horizontal span (or the
+// lane end), so short events can run their title on into free space.
+const CASCADE_MIN_GAP_H = 0.5;
+const CASCADE_STEP = 0.18;
+const CASCADE_MAX_DEPTH = 3;
+
+function layoutDay(timed, range) {
+  const items = timed
+    .map((ev) => {
+      const s = parseTime(ev.start);
+      if (s == null) return null;
+      const e = Math.max(parseTime(ev.end) ?? s + 1, s + 0.25);
+      return { ev, s, e };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.s - b.s || b.e - a.e);
+
+  const groups = [];
+  const running = (g, t) => g.members.some((o) => o.e > t);
+  for (const it of items) {
+    const join = [...groups].reverse().find(
+      (g) => it.s - g.s < CASCADE_MIN_GAP_H && running(g, it.s)
+    );
+    if (join) {
+      join.members.push(it);
+      continue;
+    }
+    const active = groups.filter((g) => running(g, it.s));
+    const depth = active.length
+      ? Math.min(CASCADE_MAX_DEPTH, Math.max(...active.map((g) => g.depth)) + 1)
+      : 0;
+    groups.push({ s: it.s, depth, members: [it] });
+  }
+  let z = 1;
+  for (const g of groups) {
+    const indent = g.depth * CASCADE_STEP;
+    const w = (1 - indent) / g.members.length;
+    g.members.forEach((it, i) => {
+      it.x0 = indent + i * w;
+      it.w = w;
+      it.z = z++;
+    });
+  }
+
+  const xOverlap = (a, b) => a.x0 < b.x0 + b.w - 1e-6 && b.x0 < a.x0 + a.w - 1e-6;
+  for (const it of items) {
+    let next = range.end;
+    for (const o of items) {
+      if (o !== it && o.s > it.s && o.s < next && xOverlap(it, o)) next = o.s;
+    }
+    it.labelEnd = next;
+  }
+  return items;
+}
+
+// One positioned event block. The outer box spans the label room; the
+// inner .icd-dur paints the actual duration (accent spine + soft tint),
+// so the spine length stays true even when the title runs on below it.
+// `opts.showSub` adds the time line, `opts.showLoc` the location row.
+function eventBlock(it, range, span, opts) {
+  const { ev, s, e } = it;
+  const pct = (h) => ((h - range.start) / span) * 100;
+  const top = Math.max(0, pct(s));
+  const durH = Math.max(0.8, pct(Math.min(e, range.end)) - top);
+  // The title may run past the duration into free space, but must stop
+  // where a later event starts on top of this one (labelEnd < end then).
+  const labelH = Math.max(0.8, pct(Math.min(it.labelEnd, range.end)) - top);
+  const boxH = Math.max(durH, labelH);
+  const left = it.x0 * 100;
+  const width = it.w * 100;
   const n = ev.accent || 4;
-  const border = `var(--accent-${n})`;
-  const tint = `var(--accent-${n}-soft)`;
   const time = `${fmtHm(ev.start)}${ev.end ? `–${fmtHm(ev.end)}` : ""}`;
-  const isTiny = rawHeight < 4;
   const loc = ev.location || "";
-  const sub = opts.showSub && rawHeight > 5
-    ? `<span class="tt-sub">${escapeHtml(time)}</span>` : "";
-  const locRow = opts.showLoc && loc && rawHeight > 8
+  const sub = opts.showSub ? `<span class="tt-sub">${escapeHtml(time)}</span>` : "";
+  const locRow = opts.showLoc && loc
     ? `<span class="tt-loc"><i class="ph-bold ph-map-pin"></i>${escapeHtml(loc)}</span>` : "";
   return `
-    <div class="tt-event ${isTiny ? "is-tiny" : ""}"
-         style="top:${top.toFixed(2)}%;height:${rawHeight.toFixed(2)}%;border-left-color:${border};--tt-bg:${tint}"
+    <div class="tt-event icd-ev"
+         style="top:${top.toFixed(2)}%;height:${boxH.toFixed(2)}%;left:${left.toFixed(2)}%;width:${width.toFixed(2)}%;z-index:${it.z};--tt-bg:var(--accent-${n}-soft)"
+         data-label-frac="${(labelH / boxH).toFixed(4)}"
          title="${escapeHtml(time)} ${escapeHtml(ev.summary || "")}${loc ? ` · ${escapeHtml(loc)}` : ""}">
+      <span class="icd-dur" style="height:${((durH / boxH) * 100).toFixed(2)}%;border-left-color:var(--accent-${n})"></span>
       <span class="tt-name">${escapeHtml(ev.summary || "")}</span>
       ${sub}
       ${locRow}
     </div>`;
 }
 
+// After layout: fit each title to the room its box actually has, as a
+// whole number of lines with an ellipsis on the last one, instead of a
+// fixed 3-line clamp that either wastes free space or cuts mid-line.
+function fitTitles(root) {
+  for (const box of root.querySelectorAll(".icd-ev")) {
+    const name = box.querySelector(".tt-name");
+    if (!name) continue;
+    const cs = getComputedStyle(box);
+    const frac = Number(box.dataset.labelFrac) || 1;
+    let room = box.clientHeight * frac - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const lh = parseFloat(getComputedStyle(name).lineHeight) || name.offsetHeight || 16;
+    const minLine = lh * 0.75;
+    // Title first; the time / location rows only if a title line still
+    // fits beside them, otherwise they'd overlap the event below.
+    for (const extra of box.querySelectorAll(".tt-sub, .tt-loc")) {
+      if (room - extra.offsetHeight >= minLine) room -= extra.offsetHeight;
+      else extra.style.display = "none";
+    }
+    const lines = Math.floor((room + lh * 0.25) / lh);
+    if (lines < 1) {
+      name.style.display = "none";
+    } else {
+      name.style.webkitLineClamp = String(lines);
+      name.style.lineClamp = String(lines);
+    }
+  }
+}
+
 function laneHtml(day, range, span, nowH, opts) {
   const timed = (day.events || []).filter((e) => !e.all_day);
-  const blocks = timed.map((ev) => eventBlock(ev, range, span, opts)).join("");
+  const blocks = layoutDay(timed, range).map((it) => eventBlock(it, range, span, opts)).join("");
   const showNow = day.is_today && nowH >= range.start && nowH <= range.end;
   const nowLine = showNow
     ? `<div class="tt-now" style="top:${(((nowH - range.start) / span) * 100).toFixed(2)}%"></div>`
@@ -179,7 +278,7 @@ const HERO_EMPTY = `
     <span class="u-label">Nothing scheduled</span>
   </div>`;
 
-export default function render(shadow, ctx) {
+export default async function render(shadow, ctx) {
   const __t0 = performance.now();
   const data = ctx?.data ?? {};
   const size = ctx?.cell?.size || "md";
@@ -238,11 +337,31 @@ export default function render(shadow, ctx) {
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
     }
     .tt-event .tt-loc .ph-bold { font-size: 0.95em; color: var(--text-muted); flex: 0 0 auto; }
-    /* Smaller title that wraps up to 3 lines instead of a single
-       ellipsised line, so event names read fully inside the block
-       (the base .tt-event .tt-name is --fs-body / nowrap, which clips
-       in the narrow week columns). */
-    .tt-event { padding-top: 2px; padding-bottom: 2px; gap: 0; }
+    /* Event box = label room (see layoutDay); the duration itself is the
+       .icd-dur layer behind the text. Boxes sit side by side when events
+       overlap, with a hairline gap so neighbouring spines stay apart. The
+       title wraps to as many lines as the box has room for (fitTitles
+       sets the clamp after layout), breaking long words if it must. */
+    .tt-event.icd-ev {
+      right: auto;
+      background: none;
+      border-left: none;
+      box-sizing: border-box;
+      padding: 2px 3px 2px calc(var(--stroke-3) + 4px);
+      gap: 0;
+      isolation: isolate;
+      border-right: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .icd-dur {
+      position: absolute; left: 0; top: 0; right: 2px;
+      z-index: -1;
+      border-left: var(--stroke-3) solid var(--accent-4);
+      /* Opaque (tint over surface) so a cascaded event cleanly covers
+         the lower part of the one it overlaps. */
+      background: linear-gradient(var(--tt-bg, var(--surface)), var(--tt-bg, var(--surface))), var(--surface);
+      border-top: 1px solid var(--text-muted);
+    }
     .tt-event .tt-name {
       font-size: calc(var(--fs-caption) * 0.9);
       line-height: 1.05;
@@ -253,12 +372,11 @@ export default function render(shadow, ctx) {
       line-clamp: 3;
       -webkit-box-orient: vertical;
       overflow: hidden;
-      word-break: break-word;
+      overflow-wrap: anywhere;
       hyphens: auto;
+      flex: 0 0 auto;
     }
     .tt-event .tt-sub { font-size: calc(var(--fs-caption) * 0.85); }
-    .tt-event.is-tiny .tt-name { display: none; }
-    .tt-event.is-tiny { padding-top: 0; padding-bottom: 0; }
     [data-hide-labels="true"] .tt-event .tt-name,
     [data-hide-labels="true"] .tt-event .tt-sub,
     [data-hide-labels="true"] .tt-event .tt-loc { display: none; }
@@ -290,7 +408,11 @@ export default function render(shadow, ctx) {
       font-weight: var(--fw-bold);
       padding: 1px var(--space-1);
       color: var(--text-primary);
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      /* Two wrapped lines before the ellipsis: one line cut most names
+         ("Urlaub Bran…") in the narrow week columns. */
+      white-space: normal; overflow: hidden; overflow-wrap: anywhere;
+      display: -webkit-box; -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2; line-clamp: 2;
     }
     .tt-allday-more { font-size: var(--fs-caption); font-weight: var(--fw-bold); color: var(--text-muted); padding-left: var(--space-1); }
     [data-hide-labels="true"] .tt-allday-col .tt-allday-pill { font-size: 0; min-height: 0.55em; }
@@ -414,11 +536,25 @@ export default function render(shadow, ctx) {
   shadow.innerHTML = `
     ${css}
     <style>${layout}</style>
-    <div class="w size-${escapeHtml(size)}" data-widget="icloud_calendar" data-hide-labels="${hideLabels}">
+    <div class="w size-${escapeHtml(size)}" lang="de" data-widget="icloud_calendar" data-hide-labels="${hideLabels}">
       <div class="w-body" style="gap:var(--space-3)">
         ${headerHtml}
         ${bodyHtml}
       </div>
     </div>`;
+  // fitTitles measures real box heights, so the stylesheet (lane
+  // positioning, font sizes) and web fonts must be in before it runs. The
+  // composer awaits render() before the screenshot.
+  if (!hideLabels) {
+    const link = shadow.querySelector('link[rel="stylesheet"]');
+    if (link && !link.sheet) {
+      await new Promise((resolve) => {
+        link.addEventListener("load", resolve, { once: true });
+        link.addEventListener("error", resolve, { once: true });
+      });
+    }
+    await document.fonts?.ready;
+    fitTitles(shadow);
+  }
   console.log(`[icloud_calendar] render() took ${(performance.now() - __t0).toFixed(2)}ms`);
 }
