@@ -273,6 +273,38 @@ def test_afternoon_refetches_until_tomorrow_is_published(app: Flask, tmp_path) -
         assert cached["has_tomorrow"] is True
 
 
+def test_successful_fetch_prunes_old_price_caches(app: Flask, tmp_path) -> None:
+    """Earlier days' and older schemas' price files are deleted after a
+    successful fetch, so the data dir doesn't grow by a file per day."""
+    _skip_if_not_loaded(app)
+    from importlib import import_module
+
+    srv = import_module("plugins.ostrom_prices.server")
+    data_dir = tmp_path / "pdir"
+    data_dir.mkdir()
+    stale = [
+        data_dir / "prices_v2_10115_2026-01-01.json",
+        data_dir / "prices_10115_2026-01-02.json",
+    ]
+    for f in stale:
+        f.write_text("{}")
+    (data_dir / "token.json").write_text("{}")
+
+    with app.app_context():
+        app.config["SETTINGS_STORE"].update_section("app", {"timezone": "Europe/Berlin"})
+        with patch("urllib.request.urlopen", side_effect=_responses()):
+            result = srv.fetch(
+                {},
+                {"client_id": "cid", "client_secret": "csec", "zip": "10115"},
+                ctx={"data_dir": str(data_dir), "panel_w": 800, "panel_h": 480, "preview": False},
+            )
+
+    assert "error" not in result, result
+    assert not any(f.exists() for f in stale)
+    assert len(list(data_dir.glob("prices_*.json"))) == 1
+    assert (data_dir / "token.json").exists()
+
+
 def test_outlook_uses_real_tomorrow_then_forecast(app: Flask, tmp_path) -> None:
     """Tomorrow's published prices are shown as real; later days come from
     the weather model, which must recover a clean synthetic relation

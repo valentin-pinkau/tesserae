@@ -95,7 +95,8 @@ WEATHER_FAILURE_COOLDOWN_S = 10 * 60
 
 # Bumped whenever the cached result's shape changes, so a file written by an
 # older version of this plugin is ignored rather than served with missing
-# fields. Old files orphan harmlessly and rotate out daily.
+# fields. Superseded files are pruned on each successful fetch
+# (see _prune_old_prices).
 CACHE_SCHEMA = "v3"
 
 AUTH_URL = "https://auth.production.ostrom-api.io/oauth2/token"
@@ -409,7 +410,18 @@ def _load_prices(
             prices_path,
             {"prices": fetched, "fetched_at": time.time(), "has_tomorrow": has_tomorrow},
         )
+        _prune_old_prices(data_dir, keep=prices_path)
         return fetched
+
+
+def _prune_old_prices(data_dir: Path, *, keep: Path) -> None:
+    """Delete earlier days' (and older schemas') price caches. Each file
+    holds a month of hourly prices, so letting one pile up per day would
+    grow the data dir by several MB a year for nothing."""
+    for old in data_dir.glob("prices_*.json"):
+        if old != keep:
+            with contextlib.suppress(OSError):
+                old.unlink()
 
 
 def _wind_power(speed_ms: float) -> float:
