@@ -1,9 +1,9 @@
 {
   "tesserae_compat": "1.x",
   "name": "Electricity Price",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "kind": "widget",
-  "description": "Today's hourly electricity spot price as a bar chart, with the current hour highlighted. Data from the Ostrom API (gross price, incl. tax).",
+  "description": "Hourly electricity spot price (Ostrom API, gross incl. tax) for today, plus an outlook for the next days: tomorrow's published prices and a wind/solar-weather forecast beyond, with the cheapest day marked.",
   "icon": "ph-lightning",
   "supports": {
     "sizes": [
@@ -45,6 +45,13 @@
       "label": "Title",
       "default": "",
       "help": "Optional heading override; blank shows \"Electricity\"."
+    },
+    {
+      "name": "outlook",
+      "type": "boolean",
+      "label": "Show next days",
+      "default": true,
+      "help": "Extend the chart over the next days: tomorrow's real prices once published (~13:00), then a forecast from wind and solar weather (dashed). Hidden on the smallest cell size."
     }
   ],
   "render": {
@@ -54,6 +61,7 @@
   "requires": [
     "network:auth.production.ostrom-api.io",
     "network:production.ostrom-api.io",
+    "network:api.open-meteo.com",
     "settings:plugin"
   ]
 }
