@@ -5,9 +5,10 @@
 //
 // With the outlook on, the line continues over the next days: tomorrow's
 // real prices once the auction publishes, then a weather-model forecast
-// drawn dashed. Each day is captioned with its cheapest WINDOW_HOURS-hour
-// window; the cheapest day overall gets an accent-3 pill + shaded window,
-// which answers "laundry today or wait?" at a glance.
+// drawn dashed. Each day is captioned with its own cheapest
+// WINDOW_HOURS-hour window (time + average price) and that window is
+// marked along the bottom edge, so "when today / when tomorrow" reads
+// straight off the chart.
 //
 // Every mark must survive a monochrome panel: the renderer maps each pixel
 // to the nearest panel colour without dithering, so any light tint turns
@@ -158,8 +159,6 @@ export default function render(shadow, ctx) {
     : -1;
   const labels = Array.from({ length: n }, (_, i) => String(hourOf(i)).padStart(2, "0"));
 
-  const bestDayIdx = days.findIndex((d) => d.date === data.bestDay);
-  const bestDay = bestDayIdx >= 0 ? days[bestDayIdx] : null;
   const dayName = (i) => (i === 0 ? "Today" : weekday(days[i].date));
 
   const chip = (showChip && data.now != null)
@@ -169,11 +168,11 @@ export default function render(shadow, ctx) {
       </span>`
     : "";
 
-  // Multi-day legend doubles as the recommendation ("Best: Sun 11–14"); the
-  // red now-pip is self-explanatory next to the red "Now:" chip, and the
-  // band only covers today, so both keys shrink to fit one row at md.
-  const bestKey = multiDay && bestDay?.best
-    ? `<span class="ep-key best"><span class="sw best-sw"></span>Best: ${escapeHtml(dayName(bestDayIdx))} ${escapeHtml(fmtWindow(bestDay.best, windowHours))}</span>`
+  // Multi-day legend explains the per-day window bars; the red now-pip is
+  // self-explanatory next to the red "Now:" chip, and the band only covers
+  // today, so both keys shrink to fit one row at md.
+  const windowKey = multiDay
+    ? `<span class="ep-key"><span class="sw best-sw"></span>Cheapest ${windowHours}&nbsp;h</span>`
     : "";
   const legend = showLegend
     ? `
@@ -181,7 +180,7 @@ export default function render(shadow, ctx) {
         <span class="ep-key"><span class="sw line-sw"></span>${multiDay ? "Price" : "Today"}</span>
         ${hasForecast ? '<span class="ep-key"><span class="sw fc-sw"></span>Forecast</span>' : ""}
         ${hasBand ? `<span class="ep-key"><span class="sw band-sw"></span>${multiDay ? "Typical" : "Typical (7&nbsp;days)"}</span>` : ""}
-        ${multiDay ? bestKey : '<span class="ep-key"><span class="sw now-sw"></span>Now</span>'}
+        ${multiDay ? windowKey : '<span class="ep-key"><span class="sw now-sw"></span>Now</span>'}
       </div>`
     : "";
 
@@ -227,7 +226,6 @@ export default function render(shadow, ctx) {
       background: repeating-linear-gradient(-45deg, var(--text-secondary) 0 1.25px, transparent 1.25px 4.5px);
     }
     .ep-key .best-sw { height: 0.4em; background: var(--accent-3); }
-    .ep-key.best { color: var(--accent-3); }
     .ep-key .now-sw {
       width: 0.8em; height: 0.8em; box-sizing: border-box;
       border: 3px solid var(--accent-1); border-radius: 50%; background: var(--surface);
@@ -359,7 +357,7 @@ export default function render(shadow, ctx) {
   const lo = Math.min(...span);
   const hi = Math.max(...span);
   const pad = Math.max(0.5, (hi - lo) * (showMinMaxLabels ? 0.22 : 0.12));
-  const topPad = multiDay ? Math.max(1, (hi - lo) * 0.3) : pad;
+  const topPad = multiDay ? Math.max(1, (hi - lo) * 0.5) : pad;
 
   // Draws a filled pill with the price next to the min/max points, so the
   // day's cheapest/priciest hour is readable straight off the chart instead
@@ -404,11 +402,9 @@ export default function render(shadow, ctx) {
   };
 
   // Multi-day furniture: dotted midnight dividers, each day's cheapest
-  // window as a bar along the bottom edge (solid on the best day, hollow on
-  // the rest), and a caption per day along the top with that window's
-  // average (inverted on the best day). The best day's window also gets a
-  // soft full-height tint, which is a colour-panel bonus only: it drops out
-  // on mono panels, where the bar and caption carry the meaning alone.
+  // window as a solid bar along the bottom edge (plus a soft full-height
+  // tint, a colour-panel bonus that drops out on mono), and a two-line
+  // caption per day along the top: the window's hours, then its average.
   const dayPlugin = {
     id: "ep_days",
     beforeDatasetsDraw(chart) {
@@ -421,16 +417,10 @@ export default function render(shadow, ctx) {
         const x0 = scales.x.getPixelForValue(di * 24 + d.best.start - 0.5);
         const x1 = scales.x.getPixelForValue(di * 24 + d.best.start + windowHours - 0.5);
         const by = chartArea.bottom - barH;
-        if (di === bestDayIdx) {
-          ctx.fillStyle = accent3Soft;
-          ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
-          ctx.fillStyle = t.accent3;
-          ctx.fillRect(x0, by, x1 - x0, barH);
-        } else {
-          ctx.strokeStyle = t.textSecondary;
-          ctx.lineWidth = 2;
-          ctx.strokeRect(x0 + 1, by + 1, x1 - x0 - 2, barH - 2);
-        }
+        ctx.fillStyle = accent3Soft;
+        ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+        ctx.fillStyle = t.accent3;
+        ctx.fillRect(x0, by, x1 - x0, barH);
       });
       ctx.strokeStyle = t.textSecondary;
       ctx.lineWidth = 1;
@@ -450,12 +440,15 @@ export default function render(shadow, ctx) {
       ctx.save();
       ctx.font = `800 ${labelTick}px ${t.fontFamily}`;
       ctx.textBaseline = "middle";
+      const th = labelTick + 6;
       days.forEach((d, di) => {
         if (!d.best) return;
         const x = scales.x.getPixelForValue(di * 24 + 11.5);
-        const label = `${d.kind === "forecast" ? "~" : ""}${fmtPrice(d.best.avg)}`;
-        const isBest = di === bestDayIdx;
-        pill(ctx, chartArea, label, x, chartArea.top + 2, isBest ? t.accent3 : null, isBest ? t.surface : t.textSecondary);
+        ctx.font = `800 ${labelTick}px ${t.fontFamily}`;
+        pill(ctx, chartArea, fmtWindow(d.best, windowHours), x, chartArea.top + 2, null, t.textPrimary);
+        ctx.font = `600 ${labelTick}px ${t.fontFamily}`;
+        const price = `${d.kind === "forecast" ? "~" : ""}${fmtPrice(d.best.avg)}`;
+        pill(ctx, chartArea, price, x, chartArea.top + 2 + th - 4, null, t.textSecondary);
       });
       ctx.restore();
     },
